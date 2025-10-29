@@ -32,8 +32,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     
     entities = []
     
-    # Check if consumption analysis is enabled
-    enable_analysis = config.get("enable_consumption_analysis", False)
+    # Check if consumption analysis is enabled (handle both boolean and string values)
+    enable_analysis_raw = config.get("enable_consumption_analysis", False)
+    
+    # Convert string values to boolean (common issue with config entries)
+    if isinstance(enable_analysis_raw, str):
+        enable_analysis = enable_analysis_raw.lower() in ("true", "1", "yes", "on")
+        _LOGGER.debug("🔄 Converted string config value '%s' to boolean: %s", enable_analysis_raw, enable_analysis)
+    else:
+        enable_analysis = bool(enable_analysis_raw)
+    
+    _LOGGER.info("🔍 Raw config value: %s (type: %s) → Boolean: %s", enable_analysis_raw, type(enable_analysis_raw), enable_analysis)
     
     # INTELLIGENT AUTOMATIC FIX: Only repair when there are actual configuration issues
     needs_repair = False
@@ -216,7 +225,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.info("🎉 Successfully created %d smart analysis sensors", len(entities))
     else:
         _LOGGER.warning("❌ Consumption analysis is DISABLED in configuration")
-        _LOGGER.warning("❌ Expected config key 'enable_consumption_analysis' = True")
+        _LOGGER.warning("❌ Expected config key 'enable_consumption_analysis' = True, got: %s (type: %s)", 
+                       config.get("enable_consumption_analysis"), type(config.get("enable_consumption_analysis")))
         _LOGGER.warning("❌ Current config keys: %s", list(config.keys()))
         _LOGGER.info("💡 To enable analysis, delete and recreate the integration with consumption analysis enabled")
     
