@@ -2,28 +2,57 @@
   "config": {
     "step": {
       "user": {
-        "title": "Select Energy Provider",
-        "description": "Choose the energy provider (Comercializador) you want to monitor.",
+        "title": "Smart Tariff Analyzer Configuration",
+        "description": "Configure your Portuguese electricity tariff analyzer. Enable consumption analysis for personalized recommendations based on your actual usage patterns.",
         "data": {
-          "comercializador": "Energy Provider"
+          "comercializador": "Energy Provider (Comercializador)",
+          "energy_type": "Energy Type",
+          "enable_consumption_analysis": "Enable Smart Consumption Analysis"
+        }
+      },
+      "consumption_config": {
+        "title": "Consumption Analysis Setup",
+        "description": "Configure smart analysis for provider: {comercializador} ({energy_type}). Found {tariff_count} available tariffs.",
+        "data": {
+          "energy_sensor": "Energy Consumption Sensor",
+          "analysis_days": "Analysis Period (days)",
+          "tariff_type": "Tariff Structure Type",
+          "current_tariff_code": "Current Tariff"
         }
       },
       "config": {
-        "title": "Configure {comercializador}",
-        "description": "Configure power capacity and select specific offers for {comercializador}.",
+        "title": "Final Configuration",
+        "description": "Configure power level and tariff selection for {comercializador} ({energy_type}). {consumption_sensor} {analysis_info}",
         "data": {
           "pot_cont": "Contracted Power (kVA)",
-          "codigos_oferta": "Available Offers (Select multiple if desired)"
+          "codigos_oferta": "Tariffs to Monitor (optional)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to data source",
-      "no_data": "No energy providers found in data"
+      "cannot_connect": "Failed to connect to ERSE data source",
+      "no_data": "No providers data available",
+      "sensor_discovery_failed": "Failed to discover energy sensors",
+      "no_energy_sensors": "No compatible energy sensors found in Home Assistant"
     },
     "abort": {
       "already_configured": "This configuration is already set up"
     }
   },
-  "title": "Portuguese Electricity Tariffs"
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Tariff Analyzer Options",
+        "description": "Current status: {current_status} | Provider: {comercializador} | Available sensors: {sensor_count}",
+        "data": {
+          "enable_consumption_analysis": "Enable Smart Consumption Analysis",
+          "energy_sensor": "Energy Consumption Sensor",
+          "analysis_days": "Analysis Period (days)",
+          "tariff_type": "Tariff Structure Type",
+          "current_tariff_code": "Current Tariff Code"
+        }
+      }
+    }
+  },
+  "title": "Smart Electricity Tariff Analyzer"
 }

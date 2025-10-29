@@ -34,7 +34,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     
     # Check if consumption analysis is enabled
     enable_analysis = config.get("enable_consumption_analysis", False)
+    
+    # TEMPORARY FIX: If the key exists but is False, and we have energy_sensor, enable it
+    if not enable_analysis and "enable_consumption_analysis" in config and config.get("energy_sensor"):
+        _LOGGER.warning("🔧 TEMPORARY FIX: Found enable_consumption_analysis=False but energy_sensor exists")
+        _LOGGER.warning("🔧 Automatically enabling consumption analysis to fix configuration issue")
+        enable_analysis = True
+        # Update the config entry to fix this permanently
+        try:
+            updated_data = dict(config)
+            updated_data["enable_consumption_analysis"] = True
+            hass.config_entries.async_update_entry(entry, data=updated_data)
+            _LOGGER.info("✅ Updated config entry to enable consumption analysis permanently")
+        except Exception as e:
+            _LOGGER.error("❌ Failed to update config entry: %s", e)
+    
     _LOGGER.info("Consumption analysis enabled: %s (type: %s)", enable_analysis, type(enable_analysis))
+    
+    # Show detailed config for debugging
+    _LOGGER.info("📋 Detailed config values:")
+    for key, value in config.items():
+        _LOGGER.info("   %s: %s (type: %s)", key, value, type(value))
     
     if enable_analysis:
         _LOGGER.info("Setting up smart tariff analysis sensors")

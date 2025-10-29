@@ -3,6 +3,7 @@ import logging
 from homeassistant import config_entries
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
+from homeassistant.core import callback
 from .const import DOMAIN, ENERGY_TYPE_OPTIONS
 from .data_loader import async_get_comercializadores, async_get_tariff_details_for_comercializador
 
@@ -715,6 +716,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._available_tariffs = {}  # Changed from offer_codes to tariffs (code -> display_name)
         self._energy_sensors = []
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        """Create the options flow."""
+        return OptionsFlowHandler(config_entry)
+
     async def async_step_user(self, user_input=None):
         """Handle the initial step - select energy type and comercializador."""
         errors = {}
@@ -921,4 +928,117 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=schema,
             description_placeholders=description_placeholders,
             errors=errors,
+        )
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for the integration."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+        self._energy_sensors = []
+        self._available_tariffs = {}
+
+    async def async_step_init(self, user_input=None):
+        """Manage the options."""
+        errors = {}
+        
+        # Get current configuration
+        current_data = self.config_entry.data
+        current_enable_analysis = current_data.get("enable_consumption_analysis", False)
+        
+        if user_input is not None:
+            # Update the config entry with new data
+            new_data = dict(current_data)
+            
+            # Always update enable_consumption_analysis
+            new_data["enable_consumption_analysis"] = user_input.get("enable_consumption_analysis", False)
+            
+            # If enabling analysis, update related settings
+            if user_input.get("enable_consumption_analysis", False):
+                if user_input.get("energy_sensor"):
+                    new_data["energy_sensor"] = user_input["energy_sensor"]
+                if user_input.get("analysis_days"):
+                    new_data["analysis_days"] = user_input["analysis_days"]
+                if user_input.get("tariff_type"):
+                    new_data["tariff_type"] = user_input["tariff_type"]
+                if user_input.get("current_tariff_code"):
+                    new_data["current_tariff_code"] = user_input["current_tariff_code"]
+            
+            # Update the config entry
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            
+            # Trigger a reload of the integration
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            
+            return self.async_create_entry(title="", data={})
+
+        # Load energy sensors and tariff details if needed
+        if not self._energy_sensors:
+            try:
+                entity_registry = async_get_entity_registry(self.hass)
+                energy_sensors = []
+                
+                for entity in entity_registry.entities.values():
+                    if (entity.device_class == "energy" or 
+                        "energy" in entity.entity_id.lower() or
+                        "kwh" in entity.entity_id.lower() or
+                        entity.unit_of_measurement in ["kWh", "Wh"]):
+                        
+                        state = self.hass.states.get(entity.entity_id)
+                        if state and state.state not in ["unknown", "unavailable"]:
+                            friendly_name = state.attributes.get("friendly_name", entity.entity_id)
+                            energy_sensors.append({
+                                "entity_id": entity.entity_id,
+                                "name": f"{friendly_name} ({entity.entity_id})"
+                            })
+                
+                self._energy_sensors = energy_sensors
+                
+            except Exception as e:
+                _LOGGER.error("Error loading energy sensors in options: %s", e)
+
+        # Build the options schema
+        sensor_options = {}
+        if self._energy_sensors:
+            sensor_options = {sensor["entity_id"]: sensor["name"] for sensor in self._energy_sensors}
+        
+        # Get current values for defaults
+        current_energy_sensor = current_data.get("energy_sensor")
+        current_analysis_days = current_data.get("analysis_days", 30)
+        current_tariff_type = current_data.get("tariff_type", "bi_hourly")
+        current_tariff_code = current_data.get("current_tariff_code")
+
+        schema_dict = {
+            vol.Required("enable_consumption_analysis", default=current_enable_analysis): bool,
+        }
+        
+        # Only show consumption options if analysis is enabled or if user wants to enable it
+        if current_enable_analysis or (user_input and user_input.get("enable_consumption_analysis")):
+            if sensor_options:
+                schema_dict[vol.Optional("energy_sensor", default=current_energy_sensor)] = vol.In(sensor_options)
+            else:
+                schema_dict[vol.Optional("energy_sensor", default=current_energy_sensor)] = str
+                
+            schema_dict.update({
+                vol.Optional("analysis_days", default=current_analysis_days): vol.All(int, vol.Range(min=7, max=365)),
+                vol.Optional("tariff_type", default=current_tariff_type): vol.In({
+                    "bi_hourly": "Bi-horário (Ponta/Vazio)",
+                    "tri_hourly": "Tri-horário (Ponta/Cheias/Vazio)"
+                }),
+                vol.Optional("current_tariff_code", default=current_tariff_code): str,
+            })
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(schema_dict),
+            errors=errors,
+            description_placeholders={
+                "current_status": "Enabled" if current_enable_analysis else "Disabled",
+                "sensor_count": len(self._energy_sensors),
+                "comercializador": current_data.get("comercializador", "Unknown"),
+            }
         )
