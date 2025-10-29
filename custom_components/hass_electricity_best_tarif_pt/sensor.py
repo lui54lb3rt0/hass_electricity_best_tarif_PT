@@ -159,7 +159,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.info("   %s: %s (type: %s)", key, value, type(value))
     
     if enable_analysis:
-        _LOGGER.info("Setting up smart tariff analysis sensors")
+        _LOGGER.info("✅ ENTERING SENSOR CREATION: Smart tariff analysis sensors")
+        _LOGGER.info("🔍 ANALYSIS ENABLED: %s", enable_analysis)
         
         energy_sensor = config.get("energy_sensor")
         analysis_days = config.get("analysis_days", 30)
@@ -170,16 +171,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                      energy_sensor, analysis_days, tariff_type, current_tariff_code)
         
         if not energy_sensor:
-            _LOGGER.error("❌ No energy sensor configured for consumption analysis")
+            _LOGGER.error("❌ SENSOR CREATION FAILED: No energy sensor configured for consumption analysis")
             _LOGGER.error("❌ This will prevent sensor creation. Please reconfigure the integration.")
             _LOGGER.error("💡 The automatic fix should have added an energy sensor - check the logs above")
+            _LOGGER.error("🔍 Current config: %s", dict(config))
             return
         
         # Check if the energy sensor exists
         sensor_state = hass.states.get(energy_sensor)
         if not sensor_state:
-            _LOGGER.error("❌ Energy sensor %s not found in Home Assistant", energy_sensor)
-            _LOGGER.error("❌ Available sensors: %s", [s for s in hass.states.async_entity_ids() if 'energy' in s or 'kwh' in s.lower()][:10])
+            _LOGGER.error("❌ SENSOR CREATION FAILED: Energy sensor %s not found in Home Assistant", energy_sensor)
+            _LOGGER.error("❌ Available energy-related sensors: %s", [s for s in hass.states.async_entity_ids() if 'energy' in s or 'kwh' in s.lower()][:10])
+            _LOGGER.error("🔍 Total available sensors: %d", len(list(hass.states.async_entity_ids())))
             return
         elif sensor_state.state in ["unknown", "unavailable"]:
             _LOGGER.warning("⚠️ Energy sensor %s is in state '%s' - analysis may not work properly", 
@@ -198,6 +201,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         
         # Create analysis sensors
         try:
+            _LOGGER.info("🏗️ STARTING SENSOR CREATION: About to create analysis sensors")
             _LOGGER.info("🔧 Creating analysis sensors...")
             sensors_to_create = [
                 ("ConsumptionAnalysisSensor", ConsumptionAnalysisSensor(
@@ -236,9 +240,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     else:
         _LOGGER.error("❌ No entities to add - check configuration above")
         _LOGGER.error("❌ This usually means:")
-        _LOGGER.error("   1. enable_consumption_analysis is False or missing")
-        _LOGGER.error("   2. energy_sensor is missing or invalid")
+        _LOGGER.error("   1. enable_consumption_analysis is False or missing (current: %s)", enable_analysis)
+        _LOGGER.error("   2. energy_sensor is missing or invalid (current: %s)", config.get("energy_sensor"))
         _LOGGER.error("   3. An error occurred during sensor creation")
+        _LOGGER.error("🔍 DEBUGGING INFO:")
+        _LOGGER.error("   - Enable analysis: %s (type: %s)", enable_analysis, type(enable_analysis))
+        _LOGGER.error("   - Raw config value: %s (type: %s)", config.get("enable_consumption_analysis"), type(config.get("enable_consumption_analysis")))
+        _LOGGER.error("   - Energy sensor: %s", config.get("energy_sensor"))
+        _LOGGER.error("   - All config keys: %s", list(config.keys()))
+        _LOGGER.error("💡 Please check the integration configuration in Home Assistant settings")
 
 
 class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
