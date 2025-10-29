@@ -35,13 +35,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Check if consumption analysis is enabled
     enable_analysis = config.get("enable_consumption_analysis", False)
     
-    # ENHANCED AUTOMATIC FIX: Handle different scenarios
-    if not enable_analysis and "enable_consumption_analysis" in config:
-        _LOGGER.warning("🔧 AUTOMATIC FIX: Found enable_consumption_analysis=False")
+    # INTELLIGENT AUTOMATIC FIX: Only repair when there are actual configuration issues
+    needs_repair = False
+    repair_reason = ""
+    
+    # Scenario 1: Consumption analysis is enabled but energy sensor is missing/invalid
+    if enable_analysis:
+        energy_sensor = config.get("energy_sensor")
+        if not energy_sensor:
+            needs_repair = True
+            repair_reason = "missing energy sensor"
+        else:
+            # Check if the configured sensor still exists and is valid
+            state = hass.states.get(energy_sensor)
+            if not state or state.state in ["unknown", "unavailable"]:
+                needs_repair = True
+                repair_reason = f"configured sensor {energy_sensor} is unavailable"
+    
+    # Scenario 2: User never configured consumption analysis (legacy setup)
+    elif "enable_consumption_analysis" not in config:
+        needs_repair = True
+        repair_reason = "legacy configuration without consumption analysis setting"
+    
+    # If consumption analysis is explicitly disabled (False), respect that choice
+    # and don't automatically enable it
+    
+    if needs_repair:
+        _LOGGER.warning("🔧 AUTOMATIC REPAIR NEEDED: %s", repair_reason)
         
         # Try to find a suitable energy sensor automatically
         energy_sensor = config.get("energy_sensor")
-        if not energy_sensor:
+        if not energy_sensor or (enable_analysis and not hass.states.get(energy_sensor)):
             _LOGGER.info("🔍 Searching for energy sensors automatically...")
             
             # Look for energy sensors in Home Assistant
@@ -82,7 +106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 _LOGGER.info("💡 Available sensors: %s", suitable_sensors[:5])
         
         if energy_sensor:
-            _LOGGER.warning("🔧 Automatically enabling consumption analysis with sensor: %s", energy_sensor)
+            _LOGGER.info("🔧 Applying automatic repair with sensor: %s", energy_sensor)
             enable_analysis = True
             
             # Update the config entry to fix this permanently
@@ -90,22 +114,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 updated_data = dict(config)
                 updated_data["enable_consumption_analysis"] = True
                 updated_data["energy_sensor"] = energy_sensor
-                updated_data["analysis_days"] = 30
-                updated_data["tariff_type"] = "bi_hourly"
+                
+                # Only set defaults if not already present
+                if "analysis_days" not in updated_data:
+                    updated_data["analysis_days"] = 30
+                if "tariff_type" not in updated_data:
+                    updated_data["tariff_type"] = "bi_hourly"
                 
                 hass.config_entries.async_update_entry(entry, data=updated_data)
-                _LOGGER.info("✅ Updated config entry to enable consumption analysis permanently")
-                _LOGGER.info("✅ Added energy sensor: %s", energy_sensor)
+                _LOGGER.info("✅ Configuration repaired successfully")
+                _LOGGER.info("✅ Energy sensor: %s", energy_sensor)
                 
                 # Update the local config dict to use the new values immediately
                 config = updated_data
-                _LOGGER.info("✅ Using updated config for current setup")
+                _LOGGER.info("✅ Using repaired config for current setup")
                 
             except Exception as e:
-                _LOGGER.error("❌ Failed to update config entry: %s", e)
+                _LOGGER.error("❌ Failed to repair configuration: %s", e)
         else:
-            _LOGGER.error("❌ No suitable energy sensors found for automatic fix")
-            _LOGGER.error("💡 Please add an energy sensor to Home Assistant or configure manually")
+            _LOGGER.warning("⚠️ No suitable energy sensor found for automatic repair")
+            _LOGGER.info("💡 Please configure an energy sensor manually in the integration options")
+    
+    # Log final configuration status
+    if enable_analysis:
+        energy_sensor = config.get("energy_sensor")
+        _LOGGER.info("✅ Consumption analysis enabled with sensor: %s", energy_sensor)
+    else:
+        _LOGGER.info("📊 Running in basic mode (consumption analysis disabled)")
     
     _LOGGER.info("Consumption analysis enabled: %s (type: %s)", enable_analysis, type(enable_analysis))
     
