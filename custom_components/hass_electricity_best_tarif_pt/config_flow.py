@@ -865,18 +865,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
-            # Convert display names back to codes for codigos_oferta
-            selected_codes = user_input.get("codigos_oferta", [])
-            if self._available_tariffs and selected_codes:
-                # Map display names back to codes
-                display_to_code = {display_name: code for code, display_name in self._available_tariffs.items()}
-                selected_codes = [display_to_code.get(item, item) for item in selected_codes]
-
+            # Always use empty list for codigos_oferta to analyze ALL available tariffs
+            # This removes the need for users to manually select tariffs
+            
             # Combine basic config with consumption config
             config_data = {
                 "comercializador": self._selected_comercializador,
                 "pot_cont": user_input.get("pot_cont"),
-                "codigos_oferta": selected_codes,
+                "codigos_oferta": [],  # Always empty - analyze ALL tariffs
                 "energy_type": self._selected_energy_type
             }
             
@@ -894,23 +890,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             title = f"{self._selected_comercializador} ({ENERGY_TYPE_OPTIONS[self._selected_energy_type]})"
             if consumption_config:
-                title += " - Smart Analysis"
+                title += " - Smart Analysis (All Tariffs)"
+            else:
+                title += " - All Tariffs"
 
             return self.async_create_entry(
                 title=title,
                 data=config_data,
             )
 
-        # Create schema with available tariffs for this comercializador
+        # Simplified schema - only power selection, no tariff codes needed
         schema_dict = {
             vol.Required("pot_cont", default=pot_cont_values[0]): vol.In(pot_cont_values),
         }
-        
-        # Only add codigos_oferta if we have tariffs available
-        if self._available_tariffs:
-            # Create reversed mapping for display (display_name -> code)
-            tariff_display_options = {display_name: code for code, display_name in self._available_tariffs.items()}
-            schema_dict[vol.Optional("codigos_oferta", default=[])] = cv.multi_select(tariff_display_options)
         
         schema = vol.Schema(schema_dict)
 
