@@ -66,16 +66,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         needs_repair = True
         repair_reason = "legacy configuration without consumption analysis setting"
     
-    # Scenario 3: User has consumption analysis key but it's False, and they claim they enabled it
-    # This suggests a config save issue or string/boolean conversion problem
-    elif not enable_analysis and "enable_consumption_analysis" in config:
-        # Check if user intended to enable it but there's a config issue
-        if "power_sensor" not in config:
-            needs_repair = True
-            repair_reason = "consumption analysis disabled but no power sensor configured - possible UI save issue"
-    
-    # If consumption analysis is explicitly disabled (False), respect that choice
-    # and don't automatically enable it
+    # NOTE: We do NOT trigger repair for Scenario 3 (disabled analysis + no power sensor)
+    # If a user explicitly disabled analysis, we respect that choice.
+    # They can enable it later in the options if they want.
     
     if needs_repair:
         _LOGGER.warning("🔧 AUTOMATIC REPAIR NEEDED: %s", repair_reason)
