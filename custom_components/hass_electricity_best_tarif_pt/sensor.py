@@ -164,22 +164,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     
     # Create recommendation engine
     recommendation_engine = TariffRecommendationEngine()
-    
-    # Store the recommendation engine in the domain data
-    if "recommendation_engines" not in hass.data[DOMAIN]:
-        hass.data[DOMAIN]["recommendation_engines"] = {}
+    hass.data.setdefault(DOMAIN, {}).setdefault("recommendation_engines", {})
     hass.data[DOMAIN]["recommendation_engines"][entry.entry_id] = recommendation_engine
 
-    # Always create the main recommendation sensor. It will adapt its state
-    # based on whether consumption analysis is active.
-    entities.append(
-        TariffRecommendationSensor(coordinator, entry.entry_id, recommendation_engine, config)
-    )
-    _LOGGER.info("✅ Created base TariffRecommendationSensor.")
-
-    # Now, add consumption-specific sensors ONLY if analysis is enabled
+    # Decide which sensors to create based on configuration
     if enable_analysis:
-        _LOGGER.info("✅ Consumption analysis is enabled, creating additional sensors.")
+        _LOGGER.info("✅ Consumption analysis is enabled, creating full suite of sensors.")
         
         power_sensor = config.get("power_sensor")
         analysis_days = config.get("analysis_days", 30)
@@ -191,11 +181,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             sensor_state = hass.states.get(power_sensor)
             if not sensor_state:
                 _LOGGER.error("❌ Cannot create analysis sensors: Power sensor '%s' not found.", power_sensor)
-            elif sensor_state.state in ["unknown", "unavailable"]:
-                _LOGGER.warning("⚠️ Power sensor '%s' is unavailable. Analysis may be inaccurate.", power_sensor)
             else:
-                _LOGGER.info("✅ Power sensor '%s' is available.", power_sensor)
-
                 try:
                     # Create and add the main analysis sensor
                     analysis_sensor = ConsumptionAnalysisSensor(
@@ -205,25 +191,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     _LOGGER.info("✅ Created ConsumptionAnalysisSensor.")
 
                     # Store a reference for other sensors to access its data
-                    hass.data.setdefault(DOMAIN, {}).setdefault("consumption_sensors", {})
+                    hass.data.setdefault("consumption_sensors", {})
                     hass.data[DOMAIN]["consumption_sensors"][entry.entry_id] = analysis_sensor
                     _LOGGER.debug("Stored consumption sensor instance for entry %s", entry.entry_id)
 
-                    # Create and add other sensors that depend on analysis
+                    # Create and add all other sensors
                     entities.extend([
+                        TariffRecommendationSensor(coordinator, entry.entry_id, recommendation_engine, config),
                         PotentialSavingsSensor(coordinator, entry.entry_id, recommendation_engine),
                         BestTariffComparisonSensor(coordinator, entry.entry_id, recommendation_engine),
                     ])
-                    _LOGGER.info("✅ Created PotentialSavingsSensor and BestTariffComparisonSensor.")
+                    _LOGGER.info("✅ Created TariffRecommendation, PotentialSavings, and BestTariffComparison sensors.")
                 
                 except Exception as e:
-                    _LOGGER.error("❌ Error creating additional analysis sensors: %s", e, exc_info=True)
+                    _LOGGER.error("❌ Error creating analysis sensors: %s", e, exc_info=True)
+    else:
+        _LOGGER.info("📊 Consumption analysis is disabled. Creating only the base tariff sensor.")
+        # Only create the base recommendation sensor which will show limited info
+        entities.append(
+            TariffRecommendationSensor(coordinator, entry.entry_id, recommendation_engine, config)
+        )
+        _LOGGER.info("✅ Created base TariffRecommendationSensor.")
 
     if entities:
         _LOGGER.info("📤 Adding %d entities to Home Assistant.", len(entities))
         async_add_entities(entities, True)
     else:
-        # This path should ideally not be taken anymore.
         _LOGGER.error("❌ No entities were created. This indicates a critical failure during setup.")
         _LOGGER.error("   - Final 'enable_analysis' flag: %s", enable_analysis)
         _LOGGER.error("   - Final 'power_sensor' config: %s", config.get("power_sensor"))
