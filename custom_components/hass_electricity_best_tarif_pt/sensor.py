@@ -48,18 +48,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     needs_repair = False
     repair_reason = ""
     
-    # Scenario 1: Consumption analysis is enabled but energy sensor is missing/invalid
+    # Scenario 1: Consumption analysis is enabled but power sensor is missing/invalid
     if enable_analysis:
-        energy_sensor = config.get("energy_sensor")
-        if not energy_sensor:
+        power_sensor = config.get("power_sensor")
+        if not power_sensor:
             needs_repair = True
-            repair_reason = "missing energy sensor"
+            repair_reason = "missing power sensor"
         else:
             # Check if the configured sensor still exists and is valid
-            state = hass.states.get(energy_sensor)
+            state = hass.states.get(power_sensor)
             if not state or state.state in ["unknown", "unavailable"]:
                 needs_repair = True
-                repair_reason = f"configured sensor {energy_sensor} is unavailable"
+                repair_reason = f"configured sensor {power_sensor} is unavailable"
     
     # Scenario 2: User never configured consumption analysis (legacy setup)
     elif "enable_consumption_analysis" not in config:
@@ -70,9 +70,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # This suggests a config save issue or string/boolean conversion problem
     elif not enable_analysis and "enable_consumption_analysis" in config:
         # Check if user intended to enable it but there's a config issue
-        if "energy_sensor" not in config:
+        if "power_sensor" not in config:
             needs_repair = True
-            repair_reason = "consumption analysis disabled but no energy sensor configured - possible UI save issue"
+            repair_reason = "consumption analysis disabled but no power sensor configured - possible UI save issue"
     
     # If consumption analysis is explicitly disabled (False), respect that choice
     # and don't automatically enable it
@@ -80,57 +80,60 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     if needs_repair:
         _LOGGER.warning("🔧 AUTOMATIC REPAIR NEEDED: %s", repair_reason)
         
-        # Try to find a suitable energy sensor automatically
-        energy_sensor = config.get("energy_sensor")
-        if not energy_sensor or (enable_analysis and not hass.states.get(energy_sensor)):
-            _LOGGER.info("🔍 Searching for energy sensors automatically...")
+        # Try to find a suitable power sensor automatically (prefer power over energy)
+        power_sensor = config.get("power_sensor")
+        if not power_sensor or (enable_analysis and not hass.states.get(power_sensor)):
+            _LOGGER.info("🔍 Searching for power sensors automatically...")
             
-            # Look for energy sensors in Home Assistant
+            # Look for power sensors first (W, kW, mW), then fall back to energy sensors
             suitable_sensors = []
+            power_sensors = []
+            energy_sensors = []
+            
             for entity_id in hass.states.async_entity_ids():
                 if entity_id.startswith("sensor."):
                     state = hass.states.get(entity_id)
-                    if state and state.attributes.get("device_class") == "energy":
-                        # Prefer sensors that look like cumulative totals
-                        if not any(word in entity_id.lower() for word in ["daily", "weekly", "monthly", "last_", "period", "today", "yesterday"]):
-                            suitable_sensors.append(entity_id)
-                    elif ("energy" in entity_id.lower() or "kwh" in entity_id.lower()) and state:
-                        unit = state.attributes.get("unit_of_measurement", "")
-                        if unit in ["kWh", "Wh"]:
-                            # Avoid non-cumulative sensors
-                            if not any(word in entity_id.lower() for word in ["daily", "weekly", "monthly", "last_", "period", "today", "yesterday", "_30_days", "_7_days"]):
-                                suitable_sensors.append(entity_id)
+                    if not state:
+                        continue
+                    
+                    unit = state.attributes.get("unit_of_measurement", "").lower()
+                    device_class = state.attributes.get("device_class", "").lower()
+                    
+                    # Check for power sensors (W, kW, mW)
+                    if (device_class == "power" or 
+                        "power" in entity_id.lower() or
+                        "_w_" in entity_id.lower() or
+                        "watt" in entity_id.lower() or
+                        unit in ["w", "kw", "mw", "watts", "watt"]):
+                        power_sensors.append(entity_id)
+                    # Check for energy sensors (kWh, Wh) as fallback
+                    elif (device_class == "energy" or 
+                          "energy" in entity_id.lower() or
+                          "kwh" in entity_id.lower() or
+                          unit in ["kwh", "wh", "mwh"]):
+                        # Avoid non-cumulative sensors (daily, weekly, periodic, etc.)
+                        if not any(word in entity_id.lower() for word in ["daily", "weekly", "monthly", "last_", "period", "today", "yesterday", "_30_days", "_7_days"]):
+                            energy_sensors.append(entity_id)
             
-            # Sort sensors by preference (total, energy, cumulative indicators)
-            def sensor_priority(sensor_id):
-                lower_id = sensor_id.lower()
-                if "total" in lower_id:
-                    return 1
-                elif "cumulative" in lower_id:
-                    return 2
-                elif "meter" in lower_id:
-                    return 3
-                elif "home" in lower_id:
-                    return 4
-                else:
-                    return 5
-            
-            suitable_sensors.sort(key=sensor_priority)
+            # Prioritize power sensors, then energy sensors
+            suitable_sensors = power_sensors + energy_sensors
             
             if suitable_sensors:
-                energy_sensor = suitable_sensors[0]  # Use the first found
-                _LOGGER.info("🎯 Found suitable energy sensor: %s", energy_sensor)
-                _LOGGER.info("💡 Available sensors: %s", suitable_sensors[:5])
+                power_sensor = suitable_sensors[0]
+                _LOGGER.info("🎯 Found suitable power sensor: %s", power_sensor)
+                _LOGGER.info("💡 Available power sensors: %s", power_sensors[:5])
+                if energy_sensors:
+                    _LOGGER.info("💡 Available energy sensors (fallback): %s", energy_sensors[:5])
         
-        if energy_sensor:
-            _LOGGER.info("🔧 Applying automatic repair with sensor: %s", energy_sensor)
+        if power_sensor:
+            _LOGGER.info("🔧 Applying automatic repair with sensor: %s", power_sensor)
             enable_analysis = True
             
             # Update the config entry to fix this permanently
             try:
                 updated_data = dict(config)
                 updated_data["enable_consumption_analysis"] = True
-                updated_data["energy_sensor"] = energy_sensor
+                updated_data["power_sensor"] = power_sensor
                 
                 # Only set defaults if not already present
                 if "analysis_days" not in updated_data:
@@ -140,7 +143,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 
                 hass.config_entries.async_update_entry(entry, data=updated_data)
                 _LOGGER.info("✅ Configuration repaired successfully")
-                _LOGGER.info("✅ Energy sensor: %s", energy_sensor)
+                _LOGGER.info("✅ Power sensor: %s", power_sensor)
                 
                 # Update the local config dict to use the new values immediately
                 config = updated_data
@@ -149,13 +152,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             except Exception as e:
                 _LOGGER.error("❌ Failed to repair configuration: %s", e)
         else:
-            _LOGGER.warning("⚠️ No suitable energy sensor found for automatic repair")
-            _LOGGER.info("💡 Please configure an energy sensor manually in the integration options")
+            _LOGGER.warning("⚠️ No suitable power sensor found for automatic repair")
+            _LOGGER.info("💡 Please configure a power sensor manually in the integration options")
     
     # Log final configuration status
     if enable_analysis:
-        energy_sensor = config.get("energy_sensor")
-        _LOGGER.info("✅ Consumption analysis enabled with sensor: %s", energy_sensor)
+        power_sensor = config.get("power_sensor")
+        _LOGGER.info("✅ Consumption analysis enabled with sensor: %s", power_sensor)
     else:
         _LOGGER.info("📊 Running in basic mode (consumption analysis disabled)")
     
@@ -170,34 +173,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.info("✅ ENTERING SENSOR CREATION: Smart tariff analysis sensors")
         _LOGGER.info("🔍 ANALYSIS ENABLED: %s", enable_analysis)
         
-        energy_sensor = config.get("energy_sensor")
+        power_sensor = config.get("power_sensor")
         analysis_days = config.get("analysis_days", 30)
         tariff_type = config.get("tariff_type", "bi_hourly")
         current_tariff_code = config.get("current_tariff_code")
         
-        _LOGGER.info("Analysis config - Energy sensor: %s, Days: %d, Type: %s, Current tariff: %s", 
-                     energy_sensor, analysis_days, tariff_type, current_tariff_code)
+        _LOGGER.info("Analysis config - Power sensor: %s, Days: %d, Type: %s, Current tariff: %s", 
+                     power_sensor, analysis_days, tariff_type, current_tariff_code)
         
-        if not energy_sensor:
-            _LOGGER.error("❌ SENSOR CREATION FAILED: No energy sensor configured for consumption analysis")
+        if not power_sensor:
+            _LOGGER.error("❌ SENSOR CREATION FAILED: No power sensor configured for consumption analysis")
             _LOGGER.error("❌ This will prevent sensor creation. Please reconfigure the integration.")
-            _LOGGER.error("💡 The automatic fix should have added an energy sensor - check the logs above")
+            _LOGGER.error("💡 The automatic fix should have added a power sensor - check the logs above")
             _LOGGER.error("🔍 Current config: %s", dict(config))
             return
         
-        # Check if the energy sensor exists
-        sensor_state = hass.states.get(energy_sensor)
+        # Check if the power sensor exists
+        sensor_state = hass.states.get(power_sensor)
         if not sensor_state:
-            _LOGGER.error("❌ SENSOR CREATION FAILED: Energy sensor %s not found in Home Assistant", energy_sensor)
-            _LOGGER.error("❌ Available energy-related sensors: %s", [s for s in hass.states.async_entity_ids() if 'energy' in s or 'kwh' in s.lower()][:10])
+            _LOGGER.error("❌ SENSOR CREATION FAILED: Power sensor %s not found in Home Assistant", power_sensor)
+            _LOGGER.error("❌ Available power/energy-related sensors: %s", [s for s in hass.states.async_entity_ids() if 'power' in s.lower() or 'energy' in s.lower() or 'kwh' in s.lower()][:10])
             _LOGGER.error("🔍 Total available sensors: %d", len(list(hass.states.async_entity_ids())))
             return
         elif sensor_state.state in ["unknown", "unavailable"]:
-            _LOGGER.warning("⚠️ Energy sensor %s is in state '%s' - analysis may not work properly", 
-                          energy_sensor, sensor_state.state)
+            _LOGGER.warning("⚠️ Power sensor %s is in state '%s' - analysis may not work properly", 
+                          power_sensor, sensor_state.state)
         else:
-            _LOGGER.info("✅ Energy sensor %s found with state: %s %s", 
-                        energy_sensor, sensor_state.state, sensor_state.attributes.get("unit_of_measurement", ""))
+            _LOGGER.info("✅ Power sensor %s found with state: %s %s", 
+                        power_sensor, sensor_state.state, sensor_state.attributes.get("unit_of_measurement", ""))
         
         # Create recommendation engine
         recommendation_engine = TariffRecommendationEngine()
@@ -213,7 +216,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             _LOGGER.info("🔧 Creating analysis sensors...")
             sensors_to_create = [
                 ("ConsumptionAnalysisSensor", ConsumptionAnalysisSensor(
-                    coordinator, entry.entry_id, energy_sensor, analysis_days, tariff_type
+                    coordinator, entry.entry_id, power_sensor, analysis_days, tariff_type
                 )),
                 ("TariffRecommendationSensor", TariffRecommendationSensor(
                     coordinator, entry.entry_id, recommendation_engine, config
@@ -262,12 +265,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.error("❌ No entities to add - check configuration above")
         _LOGGER.error("❌ This usually means:")
         _LOGGER.error("   1. enable_consumption_analysis is False or missing (current: %s)", enable_analysis)
-        _LOGGER.error("   2. energy_sensor is missing or invalid (current: %s)", config.get("energy_sensor"))
+        _LOGGER.error("   2. power_sensor is missing or invalid (current: %s)", config.get("power_sensor"))
         _LOGGER.error("   3. An error occurred during sensor creation")
         _LOGGER.error("🔍 DEBUGGING INFO:")
         _LOGGER.error("   - Enable analysis: %s (type: %s)", enable_analysis, type(enable_analysis))
         _LOGGER.error("   - Raw config value: %s (type: %s)", config.get("enable_consumption_analysis"), type(config.get("enable_consumption_analysis")))
-        _LOGGER.error("   - Energy sensor: %s", config.get("energy_sensor"))
+        _LOGGER.error("   - Power sensor: %s", config.get("power_sensor"))
         _LOGGER.error("   - All config keys: %s", list(config.keys()))
         _LOGGER.error("💡 Please check the integration configuration in Home Assistant settings")
 
@@ -280,15 +283,15 @@ class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.TOTAL
     
-    def __init__(self, coordinator, entry_id: str, energy_sensor: str, analysis_days: int, tariff_type: str):
+    def __init__(self, coordinator, entry_id: str, power_sensor: str, analysis_days: int, tariff_type: str):
         """Initialize the consumption analysis sensor."""
         super().__init__(coordinator)
-        self._energy_sensor = energy_sensor
+        self._power_sensor = power_sensor
         self._analysis_days = analysis_days
         self._tariff_type = tariff_type
         
-        # Create a clean sensor name from the energy sensor
-        sensor_name = energy_sensor.split('.')[-1].replace('_', ' ').title()
+        # Create a clean sensor name from the power sensor
+        sensor_name = power_sensor.split('.')[-1].replace('_', ' ').title()
         self._attr_name = f"Consumption Analysis {sensor_name}"
         self._attr_unique_id = f"{entry_id}_consumption_analysis"
         
@@ -312,11 +315,11 @@ class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
     async def _async_update_analysis(self, now=None):
         """Update consumption analysis."""
         try:
-            _LOGGER.debug("Starting consumption analysis for %s", self._energy_sensor)
+            _LOGGER.debug("Starting consumption analysis for %s", self._power_sensor)
             
             analyzer = ConsumptionAnalyzer(self.hass)
             self._consumption_pattern = await analyzer.analyze_consumption(
-                self._energy_sensor, self._analysis_days, self._tariff_type
+                self._power_sensor, self._analysis_days, self._tariff_type
             )
             
             if self._consumption_pattern:
@@ -330,7 +333,7 @@ class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
             self.async_write_ha_state()
             
         except Exception as e:
-            _LOGGER.error("Error updating consumption analysis for %s: %s", self._energy_sensor, e)
+            _LOGGER.error("Error updating consumption analysis for %s: %s", self._power_sensor, e)
     
     @property
     def native_value(self):
@@ -345,13 +348,13 @@ class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
         if not self._consumption_pattern:
             return {
                 "status": "No analysis available",
-                "energy_sensor": self._energy_sensor,
+                "power_sensor": self._power_sensor,
                 "analysis_days": self._analysis_days,
                 "tariff_type": self._tariff_type
             }
         
         return {
-            "energy_sensor": self._energy_sensor,
+            "power_sensor": self._power_sensor,
             "analysis_days": self._analysis_days,
             "tariff_type": self._tariff_type,
             "daily_average_kwh": round(self._consumption_pattern.daily_total, 2),

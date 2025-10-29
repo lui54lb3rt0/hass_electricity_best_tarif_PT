@@ -779,14 +779,24 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception as e:
                 _LOGGER.error("Error fetching tariffs for consumption config: %s", e)
         
-        # Get available energy sensors if not already loaded
+        # Get available power sensors (primary) and energy sensors (fallback) if not already loaded
         if not self._energy_sensors:
             try:
                 entity_registry = async_get_entity_registry(self.hass)
+                power_sensors = []
                 energy_sensors = []
                 
                 for entity in entity_registry.entities.values():
-                    # Look for both energy sensors (kWh) and power sensors (W)
+                    # Check for power sensors (W, kW, MW) - PREFERRED
+                    is_power_sensor = (
+                        entity.device_class == "power" or
+                        "power" in entity.entity_id.lower() or
+                        "_w_" in entity.entity_id.lower() or
+                        "watts" in entity.entity_id.lower() or
+                        entity.unit_of_measurement in ["W", "kW", "MW", "mW", "watts", "watt"]
+                    )
+                    
+                    # Check for energy sensors (kWh, Wh) - FALLBACK
                     is_energy_sensor = (
                         entity.device_class == "energy" or 
                         "energy" in entity.entity_id.lower() or
@@ -794,31 +804,31 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         entity.unit_of_measurement in ["kWh", "Wh", "MWh"]
                     )
                     
-                    is_power_sensor = (
-                        entity.device_class == "power" or
-                        "power" in entity.entity_id.lower() or
-                        "_w_" in entity.entity_id.lower() or
-                        "watts" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["W", "kW", "MW", "watts", "watt"]
-                    )
-                    
-                    if is_energy_sensor or is_power_sensor:
+                    if is_power_sensor or is_energy_sensor:
                         state = self.hass.states.get(entity.entity_id)
                         if state and state.state not in ["unknown", "unavailable"]:
                             friendly_name = state.attributes.get("friendly_name", entity.entity_id)
                             unit = state.attributes.get("unit_of_measurement", "")
-                            sensor_type = "⚡ Power" if is_power_sensor else "🔋 Energy"
                             
-                            energy_sensors.append({
+                            sensor_info = {
                                 "entity_id": entity.entity_id,
-                                "name": f"{sensor_type} - {friendly_name} ({unit}) [{entity.entity_id}]"
-                            })
+                                "name": f"{friendly_name} ({unit}) [{entity.entity_id}]"
+                            }
+                            
+                            if is_power_sensor:
+                                sensor_info["name"] = f"⚡ Power (W) - {sensor_info['name']}"
+                                power_sensors.append(sensor_info)
+                            elif is_energy_sensor:
+                                sensor_info["name"] = f"🔋 Energy (kWh) - {sensor_info['name']}"
+                                energy_sensors.append(sensor_info)
                 
-                self._energy_sensors = energy_sensors
-                _LOGGER.debug("Found %d energy/power sensors", len(self._energy_sensors))
+                # Prioritize power sensors first, then energy sensors
+                self._energy_sensors = power_sensors + energy_sensors
+                _LOGGER.debug("Found %d power sensors and %d energy sensors (total: %d)", 
+                             len(power_sensors), len(energy_sensors), len(self._energy_sensors))
                 
             except Exception as e:
-                _LOGGER.error("Error loading energy sensors: %s", e)
+                _LOGGER.error("Error loading power/energy sensors: %s", e)
                 errors["base"] = "sensor_discovery_failed"
 
         if user_input is not None:
@@ -836,7 +846,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             tariff_options = {code: display_name for code, display_name in self._available_tariffs.items()}
         
         schema = vol.Schema({
-            vol.Required("energy_sensor"): vol.In(sensor_options),
+            vol.Required("power_sensor"): vol.In(sensor_options),
             vol.Optional("analysis_days", default=30): vol.All(int, vol.Range(min=7, max=365)),
             vol.Optional("tariff_type", default="bi_hourly"): vol.In({
                 "bi_hourly": "Bi-horário (Ponta/Vazio)",
@@ -894,7 +904,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if consumption_config:
                 config_data.update({
                     "enable_consumption_analysis": True,
-                    "energy_sensor": consumption_config["energy_sensor"],
+                    "power_sensor": consumption_config["power_sensor"],
                     "analysis_days": consumption_config.get("analysis_days", 30),
                     "tariff_type": consumption_config.get("tariff_type", "bi_hourly"),
                     "current_tariff_code": consumption_config.get("current_tariff_code"),
