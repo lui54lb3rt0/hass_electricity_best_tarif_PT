@@ -35,19 +35,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Check if consumption analysis is enabled
     enable_analysis = config.get("enable_consumption_analysis", False)
     
-    # TEMPORARY FIX: If the key exists but is False, and we have energy_sensor, enable it
-    if not enable_analysis and "enable_consumption_analysis" in config and config.get("energy_sensor"):
-        _LOGGER.warning("🔧 TEMPORARY FIX: Found enable_consumption_analysis=False but energy_sensor exists")
-        _LOGGER.warning("🔧 Automatically enabling consumption analysis to fix configuration issue")
-        enable_analysis = True
-        # Update the config entry to fix this permanently
-        try:
-            updated_data = dict(config)
-            updated_data["enable_consumption_analysis"] = True
-            hass.config_entries.async_update_entry(entry, data=updated_data)
-            _LOGGER.info("✅ Updated config entry to enable consumption analysis permanently")
-        except Exception as e:
-            _LOGGER.error("❌ Failed to update config entry: %s", e)
+    # ENHANCED AUTOMATIC FIX: Handle different scenarios
+    if not enable_analysis and "enable_consumption_analysis" in config:
+        _LOGGER.warning("🔧 AUTOMATIC FIX: Found enable_consumption_analysis=False")
+        
+        # Try to find a suitable energy sensor automatically
+        energy_sensor = config.get("energy_sensor")
+        if not energy_sensor:
+            _LOGGER.info("🔍 Searching for energy sensors automatically...")
+            
+            # Look for energy sensors in Home Assistant
+            suitable_sensors = []
+            for entity_id in hass.states.async_entity_ids():
+                if entity_id.startswith("sensor."):
+                    state = hass.states.get(entity_id)
+                    if state and state.attributes.get("device_class") == "energy":
+                        suitable_sensors.append(entity_id)
+                    elif ("energy" in entity_id.lower() or "kwh" in entity_id.lower()) and state:
+                        unit = state.attributes.get("unit_of_measurement", "")
+                        if unit in ["kWh", "Wh"]:
+                            suitable_sensors.append(entity_id)
+            
+            if suitable_sensors:
+                energy_sensor = suitable_sensors[0]  # Use the first found
+                _LOGGER.info("🎯 Found suitable energy sensor: %s", energy_sensor)
+                _LOGGER.info("💡 Available sensors: %s", suitable_sensors[:5])
+        
+        if energy_sensor:
+            _LOGGER.warning("🔧 Automatically enabling consumption analysis with sensor: %s", energy_sensor)
+            enable_analysis = True
+            
+            # Update the config entry to fix this permanently
+            try:
+                updated_data = dict(config)
+                updated_data["enable_consumption_analysis"] = True
+                updated_data["energy_sensor"] = energy_sensor
+                updated_data["analysis_days"] = 30
+                updated_data["tariff_type"] = "bi_hourly"
+                
+                hass.config_entries.async_update_entry(entry, data=updated_data)
+                _LOGGER.info("✅ Updated config entry to enable consumption analysis permanently")
+                _LOGGER.info("✅ Added energy sensor: %s", energy_sensor)
+            except Exception as e:
+                _LOGGER.error("❌ Failed to update config entry: %s", e)
+        else:
+            _LOGGER.error("❌ No suitable energy sensors found for automatic fix")
+            _LOGGER.error("💡 Please add an energy sensor to Home Assistant or configure manually")
     
     _LOGGER.info("Consumption analysis enabled: %s (type: %s)", enable_analysis, type(enable_analysis))
     

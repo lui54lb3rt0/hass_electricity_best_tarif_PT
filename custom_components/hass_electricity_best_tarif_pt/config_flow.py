@@ -936,7 +936,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        self._config_entry = config_entry  # Use private attribute to avoid deprecation
         self._energy_sensors = []
         self._available_tariffs = {}
 
@@ -945,7 +945,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         errors = {}
         
         # Get current configuration
-        current_data = self.config_entry.data
+        current_data = self._config_entry.data
         current_enable_analysis = current_data.get("enable_consumption_analysis", False)
         
         if user_input is not None:
@@ -968,11 +968,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             
             # Update the config entry
             self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
+                self._config_entry, data=new_data
             )
             
             # Trigger a reload of the integration
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            await self.hass.config_entries.async_reload(self._config_entry.entry_id)
             
             return self.async_create_entry(title="", data={})
 
