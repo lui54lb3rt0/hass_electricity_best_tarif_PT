@@ -229,6 +229,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             for sensor_name, sensor_instance in sensors_to_create:
                 entities.append(sensor_instance)
                 _LOGGER.info("✅ Created %s: %s", sensor_name, sensor_instance.unique_id)
+                # If this is the consumption analysis sensor, store a reference so other sensors
+                # (like recommendations) can access its calculated pattern without trying to
+                # reach into the entity platform (avoids using non-existent EntityRegistry APIs).
+                try:
+                    if hasattr(sensor_instance, 'get_consumption_pattern'):
+                        hass.data.setdefault(DOMAIN, {})
+                        hass.data[DOMAIN].setdefault("consumption_sensors", {})
+                        hass.data[DOMAIN]["consumption_sensors"][entry.entry_id] = sensor_instance
+                        _LOGGER.debug("Stored consumption sensor instance for entry %s", entry.entry_id)
+                except Exception:
+                    # Don't let storage failures block sensor creation
+                    _LOGGER.debug("Could not store consumption sensor instance for %s", entry.entry_id, exc_info=True)
         
         except Exception as e:
             _LOGGER.error("❌ Error creating analysis sensors: %s", e, exc_info=True)
@@ -407,25 +419,17 @@ class TariffRecommendationSensor(CoordinatorEntity, SensorEntity):
                     break
             
             if entry_id:
-                # Try to find the consumption analysis sensor from the same entry
-                entity_registry = async_get_entity_registry(self.hass)
-                for entity in entity_registry.entities.values():
-                    if (entity.config_entry_id == entry_id and 
-                        entity.unique_id and 
-                        "consumption_analysis" in entity.unique_id):
-                        
-                        # Get the entity object and consumption pattern
-                        platform = entity_registry.async_get_platform(self.hass, entity.platform)
-                        if hasattr(platform, 'entities'):
-                            for sensor_entity in platform.entities:
-                                if (hasattr(sensor_entity, 'unique_id') and 
-                                    sensor_entity.unique_id == entity.unique_id and
-                                    hasattr(sensor_entity, 'get_consumption_pattern')):
-                                    consumption_pattern = sensor_entity.get_consumption_pattern()
-                                    if consumption_pattern:
-                                        _LOGGER.debug("Found consumption pattern from sensor: %s", entity.entity_id)
-                                        break
-                        break
+                # Try to find the consumption analysis sensor instance previously stored
+                # during setup. This avoids relying on EntityRegistry internals.
+                try:
+                    consumption_sensors = self.hass.data.get(DOMAIN, {}).get("consumption_sensors", {})
+                    sensor_instance = consumption_sensors.get(entry_id)
+                    if sensor_instance and hasattr(sensor_instance, 'get_consumption_pattern'):
+                        consumption_pattern = sensor_instance.get_consumption_pattern()
+                        if consumption_pattern:
+                            _LOGGER.debug("Found consumption pattern from stored sensor instance for entry %s", entry_id)
+                except Exception as ex:
+                    _LOGGER.debug("Error retrieving stored consumption sensor for entry %s: %s", entry_id, ex)
             
             if not consumption_pattern:
                 _LOGGER.warning("No consumption pattern available for recommendation - skipping")
