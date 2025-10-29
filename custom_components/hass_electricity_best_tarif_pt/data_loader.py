@@ -168,6 +168,48 @@ async def async_get_offer_codes_for_comercializador(hass: HomeAssistant, comerci
         _LOGGER.error("Error extracting offer codes for %s (%s): %s", comercializador, energy_type, e)
         return []
 
+
+async def async_get_tariff_details_for_comercializador(hass: HomeAssistant, comercializador: str, energy_type: str = "ele") -> dict:
+    """Get detailed tariff information (code + name) for a specific comercializador and energy type."""
+    try:
+        # Get combined data with both pricing and commercial conditions
+        full_df = await async_process_csv(hass, comercializador=comercializador, energy_type=energy_type)
+        if full_df.empty:
+            _LOGGER.warning("No data available for comercializador %s with energy type %s", comercializador, energy_type)
+            return {}
+        
+        # Look for code and name columns
+        code_col = next((c for c in CODE_COLS if c in full_df.columns), None)
+        name_cols = ["Nome da oferta comercial", "NomeProposta", "Nome Proposta", "Nome"]
+        name_col = next((c for c in name_cols if c in full_df.columns), None)
+        
+        if not code_col:
+            _LOGGER.warning("Offer code column not found in data")
+            return {}
+        
+        # Create a mapping of code -> name, using code as fallback if name not available
+        tariff_details = {}
+        
+        for _, row in full_df.iterrows():
+            code = row.get(code_col)
+            if pd.isna(code) or not code:
+                continue
+                
+            name = row.get(name_col) if name_col else None
+            if pd.isna(name) or not name:
+                name = code  # Use code as fallback
+            
+            # Create display name: "Tariff Name (CODE)"
+            display_name = f"{name} ({code})" if name != code else code
+            tariff_details[code] = display_name
+        
+        _LOGGER.debug("Found %d tariff details for %s (%s)", len(tariff_details), comercializador, energy_type)
+        return tariff_details
+    
+    except Exception as e:
+        _LOGGER.error("Error extracting tariff details for %s (%s): %s", comercializador, energy_type, e)
+        return {}
+
 async def _async_read(csv_text: str, label: str) -> pd.DataFrame:
     # Try ; then ,
     for sep in (";", ","):

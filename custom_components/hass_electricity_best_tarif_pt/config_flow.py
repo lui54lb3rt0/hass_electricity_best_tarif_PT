@@ -4,7 +4,7 @@ from homeassistant import config_entries
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from .const import DOMAIN, ENERGY_TYPE_OPTIONS
-from .data_loader import async_get_comercializadores, async_get_offer_codes_for_comercializador
+from .data_loader import async_get_comercializadores, async_get_tariff_details_for_comercializador
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -712,7 +712,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._comercializadores = []
         self._selected_comercializador = None
         self._selected_energy_type = None
-        self._available_offer_codes = []
+        self._available_tariffs = {}  # Changed from offer_codes to tariffs (code -> display_name)
         self._energy_sensors = []
 
     async def async_step_user(self, user_input=None):
@@ -763,6 +763,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle consumption analysis configuration."""
         errors = {}
         
+        # Load tariff details for current tariff selection if not already loaded
+        if not self._available_tariffs and self._selected_comercializador and self._selected_energy_type:
+            try:
+                self._available_tariffs = await async_get_tariff_details_for_comercializador(
+                    self.hass, self._selected_comercializador, self._selected_energy_type
+                )
+            except Exception as e:
+                _LOGGER.error("Error fetching tariffs for consumption config: %s", e)
+        
         # Get available energy sensors if not already loaded
         if not self._energy_sensors:
             try:
@@ -800,6 +809,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Create sensor selection options
         sensor_options = {sensor["entity_id"]: sensor["name"] for sensor in self._energy_sensors}
         
+        # Create current tariff selection options
+        tariff_options = {}
+        if self._available_tariffs:
+            tariff_options = {code: display_name for code, display_name in self._available_tariffs.items()}
+        
         schema = vol.Schema({
             vol.Required("energy_sensor"): vol.In(sensor_options),
             vol.Optional("analysis_days", default=30): vol.All(int, vol.Range(min=7, max=365)),
@@ -807,7 +821,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "bi_hourly": "Bi-horário (Ponta/Vazio)",
                 "tri_hourly": "Tri-horário (Ponta/Cheias/Vazio)"
             }),
-            vol.Optional("current_tariff_code"): str,
+            vol.Optional("current_tariff_code"): vol.In(tariff_options) if tariff_options else str,
         })
 
         return self.async_show_form(
@@ -816,7 +830,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "comercializador": self._selected_comercializador,
-                "energy_type": ENERGY_TYPE_OPTIONS[self._selected_energy_type]
+                "energy_type": ENERGY_TYPE_OPTIONS[self._selected_energy_type],
+                "tariff_count": len(self._available_tariffs) if self._available_tariffs else 0
             }
         )
 
@@ -824,17 +839,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the configuration step - select power and codes."""
         errors = {}
         
-        # Fetch offer codes for the selected comercializador and energy type if not already done
-        if not self._available_offer_codes and self._selected_comercializador and self._selected_energy_type:
+        # Fetch tariff details for the selected comercializador and energy type if not already done
+        if not self._available_tariffs and self._selected_comercializador and self._selected_energy_type:
             try:
-                self._available_offer_codes = await async_get_offer_codes_for_comercializador(
+                self._available_tariffs = await async_get_tariff_details_for_comercializador(
                     self.hass, self._selected_comercializador, self._selected_energy_type
                 )
-                if not self._available_offer_codes:
-                    _LOGGER.warning("No offer codes found for %s (%s)", self._selected_comercializador, self._selected_energy_type)
-                    self._available_offer_codes = []
+                if not self._available_tariffs:
+                    _LOGGER.warning("No tariffs found for %s (%s)", self._selected_comercializador, self._selected_energy_type)
+                    self._available_tariffs = {}
             except Exception as e:
-                _LOGGER.error("Error fetching offer codes for %s (%s): %s", self._selected_comercializador, self._selected_energy_type, e)
+                _LOGGER.error("Error fetching tariffs for %s (%s): %s", self._selected_comercializador, self._selected_energy_type, e)
                 errors["base"] = "cannot_connect"
 
         if user_input is not None:
@@ -843,11 +858,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
+            # Convert display names back to codes for codigos_oferta
+            selected_codes = user_input.get("codigos_oferta", [])
+            if self._available_tariffs and selected_codes:
+                # Map display names back to codes
+                display_to_code = {display_name: code for code, display_name in self._available_tariffs.items()}
+                selected_codes = [display_to_code.get(item, item) for item in selected_codes]
+
             # Combine basic config with consumption config
             config_data = {
                 "comercializador": self._selected_comercializador,
                 "pot_cont": user_input.get("pot_cont"),
-                "codigos_oferta": user_input.get("codigos_oferta"),
+                "codigos_oferta": selected_codes,
                 "energy_type": self._selected_energy_type
             }
             
@@ -872,14 +894,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data=config_data,
             )
 
-        # Create schema with available offer codes for this comercializador
+        # Create schema with available tariffs for this comercializador
         schema_dict = {
             vol.Required("pot_cont", default=pot_cont_values[0]): vol.In(pot_cont_values),
         }
         
-        # Only add codigos_oferta if we have codes available
-        if self._available_offer_codes:
-            schema_dict[vol.Optional("codigos_oferta", default=[])] = cv.multi_select(self._available_offer_codes)
+        # Only add codigos_oferta if we have tariffs available
+        if self._available_tariffs:
+            # Create reversed mapping for display (display_name -> code)
+            tariff_display_options = {display_name: code for code, display_name in self._available_tariffs.items()}
+            schema_dict[vol.Optional("codigos_oferta", default=[])] = cv.multi_select(tariff_display_options)
         
         schema = vol.Schema(schema_dict)
 
