@@ -90,10 +90,40 @@ class PowerToEnergyConverter:
                 try:
                     if state.state not in (None, "unknown", "unavailable"):
                         timestamp = state.last_updated
-                        # Convert power to float (assuming Watts)
-                        power_watts = float(state.state)
+                        raw_value = float(state.state)
+                        unit = str(state.attributes.get("unit_of_measurement", "")).lower()
+
+                        # Normalize to Watts
+                        # First handle explicit energy units (kWh/Wh) to avoid confusion with 'kw'
+                        if "kwh" in unit or unit.endswith("wh"):
+                            # This looks like an energy sensor (Wh/kWh) not power — skip here
+                            _LOGGER.debug("Skipping energy-like unit for power history: %s (entity %s)", unit, entity_id)
+                            continue
+                        # Now handle power units: kW, W, mW (avoid matching 'kwh')
+                        if "kw" in unit and "kwh" not in unit:
+                            power_watts = raw_value * 1000.0
+                        elif "mw" in unit and "mwh" not in unit:
+                            # mW (milliwatt) -> multiply by 0.001
+                            power_watts = raw_value * 0.001
+                        elif "w" in unit or "watt" in unit:
+                            power_watts = raw_value
+                        else:
+                            # Unknown unit: try to infer from entity id or assume Watts
+                            entity_lower = entity_id.lower()
+                            if "kw" in entity_lower and "kwh" not in entity_lower:
+                                power_watts = raw_value * 1000.0
+                            elif "w" in entity_lower or "power" in entity_lower:
+                                power_watts = raw_value
+                            else:
+                                # Default assumption: value already in Watts
+                                power_watts = raw_value
+
                         data_points.append((timestamp, power_watts))
-                except (ValueError, TypeError):
+                        # Log a few normalized samples for debugging unit issues
+                        if len(data_points) <= 3:
+                            _LOGGER.debug("Normalized power sample for %s: raw=%s unit=%s -> %s W", entity_id, raw_value, unit, power_watts)
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug("Skipping state with non-numeric value for %s: %s", entity_id, exc)
                     continue
             
             # Sort by timestamp
@@ -212,10 +242,13 @@ def get_sensor_type_from_entity(hass: HomeAssistant, entity_id: str) -> str:
     # Check unit of measurement
     unit = state.attributes.get("unit_of_measurement", "").lower()
     
-    if unit in ["w", "watt", "watts"]:
-        return "power"
-    elif unit in ["kwh", "wh", "mwh"]:
+    # Prefer explicit energy units
+    if any(x in unit for x in ["kwh", "wh", "mwh"]):
         return "energy"
+
+    # Units that contain 'w' but not 'wh' are power (W, kW, MW)
+    if "w" in unit and "wh" not in unit:
+        return "power"
     
     # Check device class
     device_class = state.attributes.get("device_class", "").lower()
