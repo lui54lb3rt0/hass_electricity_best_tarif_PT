@@ -10,6 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.components.recorder import get_instance, history
 from homeassistant.util import dt as dt_util
 
+from .power_to_energy_converter import (
+    PowerToEnergyConverter, 
+    get_sensor_type_from_entity,
+    get_expected_update_interval
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 # Portuguese tariff periods (typical bi-hourly and tri-hourly schedules)
@@ -82,18 +88,19 @@ class ConsumptionAnalyzer:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
         self._recorder = get_instance(hass)
+        self._power_converter = PowerToEnergyConverter(hass)
     
     async def analyze_consumption(
         self,
-        energy_sensor_entity_id: str,
+        sensor_entity_id: str,
         days_back: int = 30,
         tariff_type: str = "bi_hourly"
     ) -> Optional[ConsumptionPattern]:
         """
-        Analyze consumption patterns from an energy sensor.
+        Analyze consumption patterns from either a power sensor (W) or energy sensor (kWh).
         
         Args:
-            energy_sensor_entity_id: Entity ID of the energy sensor (should be cumulative kWh)
+            sensor_entity_id: Entity ID of the power/energy sensor
             days_back: Number of days to analyze
             tariff_type: "bi_hourly" or "tri_hourly"
         
@@ -104,25 +111,34 @@ class ConsumptionAnalyzer:
             end_time = dt_util.utcnow()
             start_time = end_time - timedelta(days=days_back)
             
+            # Determine sensor type (power vs energy)
+            sensor_type = get_sensor_type_from_entity(self.hass, sensor_entity_id)
+            
             _LOGGER.debug(
-                "Analyzing consumption for %s from %s to %s (%d days)",
-                energy_sensor_entity_id, start_time, end_time, days_back
+                "🔍 Analyzing consumption for %s (type: %s) from %s to %s (%d days)",
+                sensor_entity_id, sensor_type, start_time, end_time, days_back
             )
             
-            # Get historical data
-            history_data = await self._get_energy_history(
-                energy_sensor_entity_id, start_time, end_time
-            )
-            
-            if not history_data:
-                _LOGGER.warning("No historical data found for sensor %s", energy_sensor_entity_id)
-                return None
-            
-            # Calculate consumption differences (convert cumulative to interval consumption)
-            consumption_data = self._calculate_consumption_intervals(history_data)
+            # Get consumption data based on sensor type
+            if sensor_type == "power":
+                consumption_data = await self._power_converter.convert_power_to_energy_intervals(
+                    sensor_entity_id, start_time, end_time
+                )
+            elif sensor_type == "energy":
+                # Get historical data and convert cumulative to intervals
+                history_data = await self._get_energy_history(
+                    sensor_entity_id, start_time, end_time
+                )
+                consumption_data = self._calculate_consumption_intervals(history_data)
+            else:
+                _LOGGER.warning("⚠️ Unknown sensor type for %s, trying as energy sensor", sensor_entity_id)
+                history_data = await self._get_energy_history(
+                    sensor_entity_id, start_time, end_time
+                )
+                consumption_data = self._calculate_consumption_intervals(history_data)
             
             if not consumption_data:
-                _LOGGER.warning("Could not calculate consumption intervals")
+                _LOGGER.warning("⚠️ No consumption data could be calculated for sensor %s", sensor_entity_id)
                 return None
             
             # Analyze patterns
@@ -135,20 +151,31 @@ class ConsumptionAnalyzer:
             await self._analyze_time_patterns(consumption_data, pattern)
             await self._calculate_totals(consumption_data, pattern)
             
-            # Calculate data quality
-            expected_points = days_back * 24 * 4  # Assuming 15-min intervals
-            actual_points = len(consumption_data)
-            pattern.data_quality = min(1.0, actual_points / expected_points)
+            # Calculate data quality based on sensor type
+            expected_interval = get_expected_update_interval(sensor_type)
+            if sensor_type == "power":
+                # For power sensors, we need to get original power data for quality assessment
+                power_data = await self._power_converter._get_power_history(
+                    sensor_entity_id, start_time, end_time
+                )
+                pattern.data_quality = self._power_converter.estimate_data_quality(
+                    power_data, expected_interval
+                )
+            else:
+                # For energy sensors, estimate based on data points
+                expected_points = days_back * 24 * (60 / expected_interval)
+                actual_points = len(consumption_data)
+                pattern.data_quality = min(1.0, actual_points / expected_points)
             
             _LOGGER.info(
-                "Consumption analysis complete for %s: %.2f kWh total, %.1f%% data quality",
-                energy_sensor_entity_id, pattern.annual_total, pattern.data_quality * 100
+                "✅ Consumption analysis complete for %s (%s): %.2f kWh total, %.1f%% data quality",
+                sensor_entity_id, sensor_type, pattern.annual_total, pattern.data_quality * 100
             )
             
             return pattern
             
         except Exception as e:
-            _LOGGER.error("Error analyzing consumption for %s: %s", energy_sensor_entity_id, e)
+            _LOGGER.error("❌ Error analyzing consumption for %s: %s", sensor_entity_id, e)
             return None
     
     async def _get_energy_history(

@@ -786,22 +786,36 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 energy_sensors = []
                 
                 for entity in entity_registry.entities.values():
-                    # Look for energy sensors (cumulative kWh)
-                    if (entity.device_class == "energy" or 
+                    # Look for both energy sensors (kWh) and power sensors (W)
+                    is_energy_sensor = (
+                        entity.device_class == "energy" or 
                         "energy" in entity.entity_id.lower() or
                         "kwh" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["kWh", "Wh"]):
-                        
+                        entity.unit_of_measurement in ["kWh", "Wh", "MWh"]
+                    )
+                    
+                    is_power_sensor = (
+                        entity.device_class == "power" or
+                        "power" in entity.entity_id.lower() or
+                        "_w_" in entity.entity_id.lower() or
+                        "watts" in entity.entity_id.lower() or
+                        entity.unit_of_measurement in ["W", "kW", "MW", "watts", "watt"]
+                    )
+                    
+                    if is_energy_sensor or is_power_sensor:
                         state = self.hass.states.get(entity.entity_id)
                         if state and state.state not in ["unknown", "unavailable"]:
                             friendly_name = state.attributes.get("friendly_name", entity.entity_id)
+                            unit = state.attributes.get("unit_of_measurement", "")
+                            sensor_type = "⚡ Power" if is_power_sensor else "🔋 Energy"
+                            
                             energy_sensors.append({
                                 "entity_id": entity.entity_id,
-                                "name": f"{friendly_name} ({entity.entity_id})"
+                                "name": f"{sensor_type} - {friendly_name} ({unit}) [{entity.entity_id}]"
                             })
                 
                 self._energy_sensors = energy_sensors
-                _LOGGER.debug("Found %d energy sensors", len(self._energy_sensors))
+                _LOGGER.debug("Found %d energy/power sensors", len(self._energy_sensors))
                 
             except Exception as e:
                 _LOGGER.error("Error loading energy sensors: %s", e)
@@ -975,17 +989,32 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 energy_sensors = []
                 
                 for entity in entity_registry.entities.values():
-                    if (entity.device_class == "energy" or 
+                    # Look for both energy sensors (kWh) and power sensors (W)
+                    is_energy_sensor = (
+                        entity.device_class == "energy" or 
                         "energy" in entity.entity_id.lower() or
                         "kwh" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["kWh", "Wh"]):
-                        
+                        entity.unit_of_measurement in ["kWh", "Wh", "MWh"]
+                    )
+                    
+                    is_power_sensor = (
+                        entity.device_class == "power" or
+                        "power" in entity.entity_id.lower() or
+                        "_w_" in entity.entity_id.lower() or
+                        "watts" in entity.entity_id.lower() or
+                        entity.unit_of_measurement in ["W", "kW", "MW", "watts", "watt"]
+                    )
+                    
+                    if is_energy_sensor or is_power_sensor:
                         state = self.hass.states.get(entity.entity_id)
                         if state and state.state not in ["unknown", "unavailable"]:
                             friendly_name = state.attributes.get("friendly_name", entity.entity_id)
+                            unit = state.attributes.get("unit_of_measurement", "")
+                            sensor_type = "⚡ Power" if is_power_sensor else "🔋 Energy"
+                            
                             energy_sensors.append({
                                 "entity_id": entity.entity_id,
-                                "name": f"{friendly_name} ({entity.entity_id})"
+                                "name": f"{sensor_type} - {friendly_name} ({unit}) [{entity.entity_id}]"
                             })
                 
                 self._energy_sensors = energy_sensors

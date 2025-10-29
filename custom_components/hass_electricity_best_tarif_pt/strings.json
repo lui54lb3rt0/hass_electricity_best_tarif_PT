@@ -14,7 +14,7 @@
         "title": "Consumption Analysis Setup",
         "description": "Configure smart analysis for provider: {comercializador} ({energy_type}). Found {tariff_count} available tariffs.",
         "data": {
-          "energy_sensor": "Energy Consumption Sensor",
+          "energy_sensor": "Power/Energy Sensor (W or kWh)",
           "analysis_days": "Analysis Period (days)",
           "tariff_type": "Tariff Structure Type",
           "current_tariff_code": "Current Tariff"
@@ -33,7 +33,7 @@
       "cannot_connect": "Failed to connect to ERSE data source",
       "no_data": "No providers data available",
       "sensor_discovery_failed": "Failed to discover energy sensors",
-      "no_energy_sensors": "No compatible energy sensors found in Home Assistant"
+      "no_energy_sensors": "No compatible power or energy sensors found in Home Assistant"
     },
     "abort": {
       "already_configured": "This configuration is already set up"
@@ -46,7 +46,7 @@
         "description": "Current status: {current_status} | Provider: {comercializador} | Available sensors: {sensor_count}",
         "data": {
           "enable_consumption_analysis": "Enable Smart Consumption Analysis",
-          "energy_sensor": "Energy Consumption Sensor",
+          "energy_sensor": "Power/Energy Sensor (W or kWh)",
           "analysis_days": "Analysis Period (days)",
           "tariff_type": "Tariff Structure Type",
           "current_tariff_code": "Current Tariff Code"
