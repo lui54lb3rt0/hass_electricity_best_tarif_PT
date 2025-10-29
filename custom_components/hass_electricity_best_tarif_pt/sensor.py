@@ -50,11 +50,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 if entity_id.startswith("sensor."):
                     state = hass.states.get(entity_id)
                     if state and state.attributes.get("device_class") == "energy":
-                        suitable_sensors.append(entity_id)
+                        # Prefer sensors that look like cumulative totals
+                        if not any(word in entity_id.lower() for word in ["daily", "weekly", "monthly", "last_", "period", "today", "yesterday"]):
+                            suitable_sensors.append(entity_id)
                     elif ("energy" in entity_id.lower() or "kwh" in entity_id.lower()) and state:
                         unit = state.attributes.get("unit_of_measurement", "")
                         if unit in ["kWh", "Wh"]:
-                            suitable_sensors.append(entity_id)
+                            # Avoid non-cumulative sensors
+                            if not any(word in entity_id.lower() for word in ["daily", "weekly", "monthly", "last_", "period", "today", "yesterday", "_30_days", "_7_days"]):
+                                suitable_sensors.append(entity_id)
+            
+            # Sort sensors by preference (total, energy, cumulative indicators)
+            def sensor_priority(sensor_id):
+                lower_id = sensor_id.lower()
+                if "total" in lower_id:
+                    return 1
+                elif "cumulative" in lower_id:
+                    return 2
+                elif "meter" in lower_id:
+                    return 3
+                elif "home" in lower_id:
+                    return 4
+                else:
+                    return 5
+            
+            suitable_sensors.sort(key=sensor_priority)
             
             if suitable_sensors:
                 energy_sensor = suitable_sensors[0]  # Use the first found
@@ -312,23 +332,41 @@ class TariffRecommendationSensor(CoordinatorEntity, SensorEntity):
     async def _async_update_recommendation(self, now=None):
         """Update tariff recommendation."""
         try:
-            # Find the consumption analysis sensor
+            # Find the consumption analysis sensor in the same entry
             consumption_pattern = None
             
-            # Look for consumption analysis sensor in the same entry
-            for entity_id in self.hass.states.async_entity_ids():
-                if (entity_id.startswith("sensor.") and 
-                    "consumption_analysis" in entity_id and
-                    DOMAIN in entity_id):
-                    
-                    # Try to get the consumption pattern from the sensor
-                    entity = self.hass.data.get("entity_registry", {}).get(entity_id)
-                    if hasattr(entity, 'get_consumption_pattern'):
-                        consumption_pattern = entity.get_consumption_pattern()
+            # Look for consumption analysis sensor by checking the recommendation engine's storage
+            entry_id = None
+            for eid, engine in self.hass.data[DOMAIN].get("recommendation_engines", {}).items():
+                if engine == self._recommendation_engine:
+                    entry_id = eid
+                    break
+            
+            if entry_id:
+                # Try to find the consumption analysis sensor from the same entry
+                entity_registry = async_get_entity_registry(self.hass)
+                for entity in entity_registry.entities.values():
+                    if (entity.config_entry_id == entry_id and 
+                        entity.unique_id and 
+                        "consumption_analysis" in entity.unique_id):
+                        
+                        # Get the entity object and consumption pattern
+                        platform = entity_registry.async_get_platform(self.hass, entity.platform)
+                        if hasattr(platform, 'entities'):
+                            for sensor_entity in platform.entities:
+                                if (hasattr(sensor_entity, 'unique_id') and 
+                                    sensor_entity.unique_id == entity.unique_id and
+                                    hasattr(sensor_entity, 'get_consumption_pattern')):
+                                    consumption_pattern = sensor_entity.get_consumption_pattern()
+                                    if consumption_pattern:
+                                        _LOGGER.debug("Found consumption pattern from sensor: %s", entity.entity_id)
+                                        break
                         break
             
             if not consumption_pattern:
                 _LOGGER.warning("No consumption pattern available for recommendation - skipping")
+                _LOGGER.warning("This usually means the consumption analysis hasn't completed yet")
+                _LOGGER.warning("The recommendation will be available after the first analysis runs")
                 return
             
             # Get tariff data from coordinator
