@@ -1,0 +1,18 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="256" height="256" fill="#1976D2" rx="32"/>
+  
+  <!-- Lightning bolt - main symbol -->
+  <path d="M100 50 L156 50 L120 130 L140 130 L80 206 L116 126 L96 126 Z" 
+        fill="#FFFFFF" opacity="0.9"/>
+  
+  <!-- Portuguese flag inspired accent -->
+  <circle cx="200" cy="56" r="16" fill="#006600"/>
+  <circle cx="200" cy="56" r="8" fill="#FF0000"/>
+  
+  <!-- Euro symbol -->
+  <text x="180" y="220" font-family="Arial, sans-serif" font-size="36" font-weight="bold" fill="#FFD700">€</text>
+  
+  <!-- "PT" text -->
+  <text x="40" y="240" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#FFFFFF" opacity="0.8">PT</text>
+</svg>

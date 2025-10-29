@@ -1,0 +1,335 @@
+"""Enhanced sensor platform with consumption analysis and tariff recommendations."""
+from __future__ import annotations
+
+from datetime import datetime, timezone, timedelta
+import logging
+import json
+from typing import Dict, Any, Optional
+
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.const import UnitOfEnergy, UnitOfTime
+from homeassistant.helpers.event import async_track_time_interval
+
+from .const import DOMAIN, VERSION
+from .consumption_analyzer import ConsumptionAnalyzer, ConsumptionPattern
+from .recommendation_engine import TariffRecommendationEngine, TariffRecommendation
+from .sensor import OfferSensor, _normalize, _clean_for_display  # Import existing sensor
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
+    """Set up the sensor platform with enhanced features."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    config = hass.data[DOMAIN][entry.entry_id]["config"]
+    
+    entities = []
+    
+    # Create traditional offer sensors (existing functionality)
+    await _setup_offer_sensors(hass, entry, async_add_entities, coordinator, config)
+    
+    # Create new consumption analysis and recommendation sensors if enabled
+    if config.get("enable_consumption_analysis", False):
+        await _setup_analysis_sensors(hass, entry, entities, coordinator, config)
+    
+    if entities:
+        async_add_entities(entities, True)
+
+
+async def _setup_offer_sensors(hass, entry, async_add_entities, coordinator, config):
+    """Set up traditional offer sensors (existing functionality)."""
+    # Import and use the existing sensor setup from sensor.py
+    from .sensor import async_setup_entry as setup_original_sensors
+    await setup_original_sensors(hass, entry, async_add_entities)
+
+
+async def _setup_analysis_sensors(hass, entry, entities, coordinator, config):
+    """Set up consumption analysis and recommendation sensors."""
+    energy_sensor = config.get("energy_sensor")
+    analysis_days = config.get("analysis_days", 30)
+    tariff_type = config.get("tariff_type", "bi_hourly")
+    current_tariff_code = config.get("current_tariff_code")
+    
+    if not energy_sensor:
+        _LOGGER.warning("No energy sensor configured for consumption analysis")
+        return
+    
+    # Create recommendation engine
+    recommendation_engine = TariffRecommendationEngine()
+    
+    # Store the recommendation engine in the domain data for persistence
+    if "recommendation_engines" not in hass.data[DOMAIN]:
+        hass.data[DOMAIN]["recommendation_engines"] = {}
+    hass.data[DOMAIN]["recommendation_engines"][entry.entry_id] = recommendation_engine
+    
+    # Create analysis sensors
+    entities.extend([
+        ConsumptionAnalysisSensor(
+            coordinator, entry.entry_id, energy_sensor, analysis_days, tariff_type
+        ),
+        TariffRecommendationSensor(
+            coordinator, entry.entry_id, recommendation_engine, config
+        ),
+        PotentialSavingsSensor(
+            coordinator, entry.entry_id, recommendation_engine
+        ),
+        BestTariffComparisonSensor(
+            coordinator, entry.entry_id, recommendation_engine
+        ),
+    ])
+
+
+class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for consumption analysis results."""
+    
+    _attr_icon = "mdi:chart-line"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL
+    
+    def __init__(self, coordinator, entry_id: str, energy_sensor: str, analysis_days: int, tariff_type: str):
+        """Initialize the consumption analysis sensor."""
+        super().__init__(coordinator)
+        self._energy_sensor = energy_sensor
+        self._analysis_days = analysis_days
+        self._tariff_type = tariff_type
+        self._attr_name = f"Consumption Analysis ({energy_sensor.split('.')[-1]})"
+        self._attr_unique_id = f"{entry_id}_consumption_analysis"
+        self._consumption_pattern: Optional[ConsumptionPattern] = None
+        self._last_analysis = None
+        
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        # Schedule periodic analysis updates
+        async_track_time_interval(
+            self.hass, self._async_update_analysis, timedelta(hours=6)
+        )
+        # Run initial analysis
+        await self._async_update_analysis()
+    
+    async def _async_update_analysis(self, now=None):
+        """Update consumption analysis."""
+        try:
+            analyzer = ConsumptionAnalyzer(self.hass)
+            self._consumption_pattern = await analyzer.analyze_consumption(
+                self._energy_sensor, self._analysis_days, self._tariff_type
+            )
+            self._last_analysis = datetime.now(timezone.utc)
+            _LOGGER.debug("Updated consumption analysis for %s", self._energy_sensor)
+            self.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.error("Error updating consumption analysis: %s", e)
+    
+    @property
+    def native_value(self):
+        """Return the annual consumption estimate."""
+        if self._consumption_pattern:
+            return round(self._consumption_pattern.annual_total, 2)
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return consumption analysis attributes."""
+        if not self._consumption_pattern:
+            return {
+                "status": "No analysis available",
+                "energy_sensor": self._energy_sensor,
+                "analysis_days": self._analysis_days,
+                "tariff_type": self._tariff_type
+            }
+        
+        return {
+            "energy_sensor": self._energy_sensor,
+            "analysis_days": self._analysis_days,
+            "tariff_type": self._tariff_type,
+            "daily_average_kwh": round(self._consumption_pattern.daily_total, 2),
+            "monthly_average_kwh": round(self._consumption_pattern.monthly_total, 2),
+            "peak_consumption_kwh": round(self._consumption_pattern.peak_consumption, 2),
+            "off_peak_consumption_kwh": round(self._consumption_pattern.off_peak_consumption, 2),
+            "intermediate_consumption_kwh": round(self._consumption_pattern.intermediate_consumption, 2),
+            "peak_percentage": round(self._consumption_pattern.peak_percentage, 1),
+            "off_peak_percentage": round(self._consumption_pattern.off_peak_percentage, 1),
+            "intermediate_percentage": round(self._consumption_pattern.intermediate_percentage, 1),
+            "data_quality": round(self._consumption_pattern.data_quality * 100, 1),
+            "analysis_period_start": self._consumption_pattern.analysis_start.isoformat() if self._consumption_pattern.analysis_start else None,
+            "analysis_period_end": self._consumption_pattern.analysis_end.isoformat() if self._consumption_pattern.analysis_end else None,
+            "last_updated": self._last_analysis.isoformat() if self._last_analysis else None,
+            "hourly_averages": self._consumption_pattern.hourly_averages,
+            "daily_averages": self._consumption_pattern.daily_averages,
+            "monthly_averages": self._consumption_pattern.monthly_averages,
+        }
+    
+    def get_consumption_pattern(self) -> Optional[ConsumptionPattern]:
+        """Get the current consumption pattern for other sensors."""
+        return self._consumption_pattern
+
+
+class TariffRecommendationSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for best tariff recommendation."""
+    
+    _attr_icon = "mdi:lightning-bolt"
+    _attr_native_unit_of_measurement = "€/year"
+    
+    def __init__(self, coordinator, entry_id: str, recommendation_engine: TariffRecommendationEngine, config: Dict):
+        """Initialize the tariff recommendation sensor."""
+        super().__init__(coordinator)
+        self._recommendation_engine = recommendation_engine
+        self._config = config
+        self._attr_name = "Best Tariff Recommendation"
+        self._attr_unique_id = f"{entry_id}_best_tariff"
+        self._last_recommendation = None
+        
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        # Schedule periodic recommendation updates
+        async_track_time_interval(
+            self.hass, self._async_update_recommendation, timedelta(hours=12)
+        )
+    
+    async def _async_update_recommendation(self, now=None):
+        """Update tariff recommendation."""
+        try:
+            # Get consumption analysis from the consumption sensor
+            consumption_sensor = None
+            for entity_id, entity in self.hass.states.async_all().items():
+                if (entity_id.startswith(f"sensor.{DOMAIN}") and 
+                    "consumption_analysis" in entity_id):
+                    consumption_sensor = self.hass.data[DOMAIN].get("entities", {}).get(entity_id)
+                    break
+            
+            if not consumption_sensor or not hasattr(consumption_sensor, 'get_consumption_pattern'):
+                _LOGGER.warning("No consumption analysis available for recommendation")
+                return
+            
+            consumption_pattern = consumption_sensor.get_consumption_pattern()
+            if not consumption_pattern:
+                _LOGGER.warning("No consumption pattern available")
+                return
+            
+            # Get tariff data from coordinator
+            if not self.coordinator.data or self.coordinator.data.empty:
+                _LOGGER.warning("No tariff data available for recommendation")
+                return
+            
+            # Generate recommendation
+            self._last_recommendation = self._recommendation_engine.analyze_and_recommend(
+                self.coordinator.data,
+                consumption_pattern,
+                self._config.get("current_tariff_code"),
+                self._config.get("tariff_type", "bi_hourly")
+            )
+            
+            _LOGGER.info("Updated tariff recommendation: %s", 
+                        self._last_recommendation.recommended_tariff_code)
+            self.async_write_ha_state()
+            
+        except Exception as e:
+            _LOGGER.error("Error updating tariff recommendation: %s", e)
+    
+    @property
+    def native_value(self):
+        """Return the annual cost of the recommended tariff."""
+        if self._last_recommendation:
+            return round(self._last_recommendation.recommended_annual_cost, 2)
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return recommendation attributes."""
+        if not self._last_recommendation:
+            return {
+                "status": "No recommendation available",
+                "current_tariff": self._config.get("current_tariff_code"),
+            }
+        
+        return {
+            "recommended_tariff_code": self._last_recommendation.recommended_tariff_code,
+            "recommended_tariff_name": self._last_recommendation.recommended_tariff_name,
+            "recommended_provider": self._last_recommendation.recommended_comercializador,
+            "annual_cost": self._last_recommendation.recommended_annual_cost,
+            "monthly_cost": self._last_recommendation.recommended_monthly_cost,
+            "current_tariff_code": self._last_recommendation.current_tariff_code,
+            "current_annual_cost": self._last_recommendation.current_annual_cost,
+            "annual_savings": self._last_recommendation.annual_savings,
+            "monthly_savings": self._last_recommendation.monthly_savings,
+            "savings_percentage": self._last_recommendation.savings_percentage,
+            "tariffs_analyzed": self._last_recommendation.total_tariffs_analyzed,
+            "data_quality": self._last_recommendation.consumption_analysis_quality * 100,
+            "analysis_timestamp": self._last_recommendation.analysis_timestamp,
+            "fixed_cost_annual": self._last_recommendation.recommended_fixed_cost_annual,
+            "energy_cost_annual": self._last_recommendation.recommended_energy_cost_annual,
+            "additional_cost_annual": self._last_recommendation.recommended_additional_cost_annual,
+            "top_alternatives": self._last_recommendation.top_alternatives[:3],  # Top 3 alternatives
+        }
+
+
+class PotentialSavingsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for potential annual savings."""
+    
+    _attr_icon = "mdi:piggy-bank"
+    _attr_native_unit_of_measurement = "€/year"
+    
+    def __init__(self, coordinator, entry_id: str, recommendation_engine: TariffRecommendationEngine):
+        """Initialize the potential savings sensor."""
+        super().__init__(coordinator)
+        self._recommendation_engine = recommendation_engine
+        self._attr_name = "Potential Annual Savings"
+        self._attr_unique_id = f"{entry_id}_potential_savings"
+    
+    @property
+    def native_value(self):
+        """Return the potential annual savings."""
+        if self._recommendation_engine.last_recommendation:
+            return round(self._recommendation_engine.last_recommendation.annual_savings, 2)
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return savings breakdown."""
+        if not self._recommendation_engine.last_recommendation:
+            return {"status": "No savings calculation available"}
+        
+        rec = self._recommendation_engine.last_recommendation
+        return {
+            "monthly_savings": round(rec.monthly_savings, 2),
+            "savings_percentage": round(rec.savings_percentage, 1),
+            "current_annual_cost": rec.current_annual_cost,
+            "recommended_annual_cost": rec.recommended_annual_cost,
+            "current_tariff": rec.current_tariff_code,
+            "recommended_tariff": rec.recommended_tariff_code,
+            "payback_period_years": round(rec.current_annual_cost / rec.recommended_annual_cost, 1) if rec.recommended_annual_cost > 0 else None,
+        }
+
+
+class BestTariffComparisonSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for detailed tariff comparison."""
+    
+    _attr_icon = "mdi:compare"
+    
+    def __init__(self, coordinator, entry_id: str, recommendation_engine: TariffRecommendationEngine):
+        """Initialize the comparison sensor."""
+        super().__init__(coordinator)
+        self._recommendation_engine = recommendation_engine
+        self._attr_name = "Tariff Comparison"
+        self._attr_unique_id = f"{entry_id}_tariff_comparison"
+    
+    @property
+    def native_value(self):
+        """Return the number of tariffs compared."""
+        if self._recommendation_engine.last_recommendation:
+            return self._recommendation_engine.last_recommendation.total_tariffs_analyzed
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return detailed comparison data."""
+        if not self._recommendation_engine.last_recommendation:
+            return {"status": "No comparison available"}
+        
+        return self._recommendation_engine.get_detailed_comparison()

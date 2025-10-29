@@ -1,0 +1,12 @@
+{
+  "domain": "hass_electricity_best_tarif_pt",
+  "name": "Analisador de Tarifários de Eletricidade PT",
+  "version": "3.0.0",
+  "requirements": ["pandas>=2.0.0", "beautifulsoup4>=4.12.0"],
+  "codeowners": ["@lui54lb3rt0"],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "documentation": "https://github.com/lui54lb3rt0/hass_electricity_best_tarif_PT",
+  "issue_tracker": "https://github.com/lui54lb3rt0/hass_electricity_best_tarif_PT/issues"
+}

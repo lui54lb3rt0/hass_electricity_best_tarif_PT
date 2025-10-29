@@ -1,0 +1,199 @@
+title: "⚡ Analisador de Tarifários de Eletricidade"
+views:
+  - title: "Visão Geral"
+    path: overview
+    icon: mdi:home-lightning-bolt
+    cards:
+      # Main recommendation card - replace with tariff_recommendation_card.yaml content
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "🏆 Melhor Tarifa"
+            secondary: >
+              {% set provider = state_attr('sensor.best_tariff_recommendation', 'recommended_provider') %}
+              {% set annual_cost = state_attr('sensor.best_tariff_recommendation', 'annual_cost') %}
+              {% if provider and annual_cost %}
+                {{ provider }} • €{{ "%.0f"|format(annual_cost) }}/ano
+              {% else %}
+                Aguarde análise de consumo
+              {% endif %}
+            icon: mdi:lightning-bolt
+            icon_color: green
+            layout: horizontal
+
+      # Quick stats row
+      - type: horizontal-stack
+        cards:
+          - type: custom:mushroom-template-card
+            primary: "Poupança Anual"
+            secondary: >
+              {% set savings = states('sensor.potential_annual_savings') | float(0) %}
+              €{{ "%.0f"|format(savings) if savings > 0 else '0' }}
+            icon: mdi:piggy-bank
+            icon_color: >
+              {% if states('sensor.potential_annual_savings') | float(0) > 100 %}
+                green
+              {% else %}
+                orange
+              {% endif %}
+
+          - type: custom:mushroom-template-card
+            primary: "Consumo Anual"
+            secondary: >
+              {% set consumption = states('sensor.consumption_analysis_energy') | float(0) %}
+              {{ "%.0f"|format(consumption) }} kWh
+            icon: mdi:lightning-bolt
+            icon_color: blue
+
+          - type: custom:mushroom-template-card
+            primary: "Tarifas Analisadas"
+            secondary: >
+              {{ state_attr('sensor.best_tariff_recommendation', 'tariffs_analyzed') or '0' }}
+            icon: mdi:compare
+            icon_color: purple
+
+  - title: "Análise de Consumo"
+    path: consumption
+    icon: mdi:chart-line
+    cards:
+      # Insert consumption_analysis_card.yaml content here
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-title-card
+            title: "Análise de Consumo"
+            subtitle: "Baseado no seu histórico de consumo"
+
+          # Consumption patterns chart
+          - type: custom:apexcharts-card
+            header:
+              title: "Distribuição por Períodos Tarifários"
+            chart_type: donut
+            series:
+              - entity: sensor.consumption_analysis_energy
+                attribute: peak_percentage
+                name: "Horas de Ponta"
+              - entity: sensor.consumption_analysis_energy
+                attribute: off_peak_percentage
+                name: "Horas de Vazio"
+
+          # Hourly consumption pattern
+          - type: custom:apexcharts-card
+            header:
+              title: "Padrão de Consumo por Hora"
+            chart_type: column
+            series:
+              - entity: sensor.consumption_analysis_energy
+                attribute: hourly_averages
+                name: "Consumo Médio"
+
+  - title: "Comparação de Tarifários"
+    path: comparison
+    icon: mdi:compare
+    cards:
+      # Insert tariff_comparison_table.yaml content here
+      - type: markdown
+        content: |
+          ## 📊 Comparação de Tarifários
+          
+          Esta tabela mostra todos os tarifários disponíveis ordenados por custo:
+
+      # Top tariffs comparison chart
+      - type: custom:apexcharts-card
+        header:
+          title: "Top 10 Tarifários por Custo"
+        chart_type: bar
+        series:
+          - entity: sensor.tariff_comparison
+            attribute: alternatives
+            name: "Custo Anual"
+
+      # Detailed comparison table
+      - type: entities
+        title: "Tarifários Disponíveis"
+        show_header_toggle: false
+        entities:
+          # This will be populated dynamically with available tariff sensors
+
+  - title: "Poupanças"
+    path: savings
+    icon: mdi:piggy-bank
+    cards:
+      # Insert savings_overview_card.yaml content here
+      - type: custom:stack-in-card
+        cards:
+          - type: custom:mushroom-title-card
+            title: "💰 Potencial de Poupança"
+
+          # Savings gauges
+          - type: horizontal-stack
+            cards:
+              - type: custom:gauge-card
+                entity: sensor.potential_annual_savings
+                title: "Poupança Anual"
+                unit: "€"
+                max: 500
+
+              - type: custom:gauge-card
+                entity: sensor.potential_annual_savings
+                attribute: savings_percentage
+                title: "Percentagem"
+                unit: "%"
+                max: 30
+
+          # Savings breakdown
+          - type: entities
+            title: "Breakdown Financeiro"
+            entities:
+              - entity: sensor.best_tariff_recommendation
+                attribute: current_annual_cost
+                name: "Custo Atual"
+              - entity: sensor.best_tariff_recommendation
+                attribute: annual_cost
+                name: "Custo Recomendado"
+
+  - title: "Configurações"
+    path: settings
+    icon: mdi:cog
+    cards:
+      - type: markdown
+        content: |
+          ## ⚙️ Configurações do Analisador
+          
+          ### Como funciona:
+          1. **Análise de Consumo**: O sistema analisa o seu histórico de consumo energético
+          2. **Comparação de Tarifários**: Compara todos os tarifários disponíveis
+          3. **Recomendação**: Sugere o melhor tarifário baseado no seu perfil
+          
+          ### Para melhorar a análise:
+          - Certifique-se de que tem pelo menos 30 dias de histórico
+          - Configure a sua tarifa atual nas definições da integração
+          - Verifique se o sensor de energia está a funcionar corretamente
+
+      - type: entities
+        title: "Estado da Integração"
+        show_header_toggle: false
+        entities:
+          - entity: sensor.consumption_analysis_energy
+            name: "Sensor de Consumo"
+          - entity: sensor.best_tariff_recommendation
+            name: "Sistema de Recomendação"
+          - entity: sensor.tariff_comparison
+            name: "Dados de Comparação"
+
+      - type: button
+        name: "Reconfigurar Integração"
+        icon: mdi:cog
+        tap_action:
+          action: navigate
+          navigation_path: "/config/integrations"
+
+      - type: markdown
+        content: |
+          ### 📞 Suporte
+          
+          - **GitHub**: [Reportar problema](https://github.com/lui54lb3rt0/hass_electricity_best_tarif_PT/issues)
+          - **Documentação**: [Wiki do projeto](https://github.com/lui54lb3rt0/hass_electricity_best_tarif_PT/wiki)
+          - **Comunidade**: [Fórum Home Assistant Portugal](https://community.home-assistant.io/)
+
+# Optional: Theme customization
+theme: default

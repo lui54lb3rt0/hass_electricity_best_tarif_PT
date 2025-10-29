@@ -1,0 +1,133 @@
+type: custom:stack-in-card
+cards:
+  - type: custom:mushroom-template-card
+    primary: "🏆 Melhor Tarifa: {{ state_attr('sensor.best_tariff_recommendation', 'recommended_tariff_name') or 'A analisar...' }}"
+    secondary: >
+      {% set provider = state_attr('sensor.best_tariff_recommendation', 'recommended_provider') %}
+      {% set annual_cost = state_attr('sensor.best_tariff_recommendation', 'annual_cost') %}
+      {% if provider and annual_cost %}
+        {{ provider }} • €{{ "%.0f"|format(annual_cost) }}/ano
+      {% else %}
+        Aguarde análise de consumo
+      {% endif %}
+    icon: mdi:lightning-bolt
+    icon_color: >
+      {% set savings = state_attr('sensor.potential_annual_savings', 'savings_percentage') %}
+      {% if savings and savings > 10 %}
+        green
+      {% elif savings and savings > 5 %}
+        orange
+      {% else %}
+        blue
+      {% endif %}
+    layout: horizontal
+    tap_action:
+      action: more-info
+    
+  - type: horizontal-stack
+    cards:
+      - type: custom:mushroom-template-card
+        primary: "Poupança Anual"
+        secondary: >
+          {% set savings = states('sensor.potential_annual_savings') | float(0) %}
+          {% if savings > 0 %}
+            €{{ "%.0f"|format(savings) }}
+          {% else %}
+            Sem poupança
+          {% endif %}
+        icon: mdi:piggy-bank
+        icon_color: >
+          {% set savings = states('sensor.potential_annual_savings') | float(0) %}
+          {% if savings > 100 %}
+            green
+          {% elif savings > 50 %}
+            orange
+          {% else %}
+            grey
+          {% endif %}
+        layout: vertical
+        
+      - type: custom:mushroom-template-card
+        primary: "Poupança %"
+        secondary: >
+          {% set percentage = state_attr('sensor.potential_annual_savings', 'savings_percentage') %}
+          {% if percentage %}
+            {{ "%.1f"|format(percentage) }}%
+          {% else %}
+            N/A
+          {% endif %}
+        icon: mdi:percent
+        icon_color: >
+          {% set percentage = state_attr('sensor.potential_annual_savings', 'savings_percentage') %}
+          {% if percentage and percentage > 10 %}
+            green
+          {% elif percentage and percentage > 5 %}
+            orange
+          {% else %}
+            grey
+          {% endif %}
+        layout: vertical
+        
+      - type: custom:mushroom-template-card
+        primary: "Tarifas Analisadas"
+        secondary: >
+          {{ state_attr('sensor.best_tariff_recommendation', 'tariffs_analyzed') or '0' }}
+        icon: mdi:compare
+        icon_color: blue
+        layout: vertical
+
+  - type: conditional
+    conditions:
+      - entity: sensor.best_tariff_recommendation
+        state_not: "unavailable"
+    card:
+      type: custom:mushroom-template-card
+      primary: "Tarifa Atual vs Recomendada"
+      secondary: >
+        {% set current = state_attr('sensor.best_tariff_recommendation', 'current_tariff_code') %}
+        {% set recommended = state_attr('sensor.best_tariff_recommendation', 'recommended_tariff_code') %}
+        {% if current and recommended %}
+          {{ current }} → {{ recommended }}
+        {% else %}
+          Configure a tarifa atual nas definições
+        {% endif %}
+      icon: mdi:swap-horizontal
+      icon_color: amber
+      layout: horizontal
+      tap_action:
+        action: call-service
+        service: browser_mod.more_info
+        service_data:
+          entity: sensor.tariff_comparison
+
+  - type: entities
+    title: "Detalhes da Recomendação"
+    show_header_toggle: false
+    entities:
+      - entity: sensor.best_tariff_recommendation
+        name: "Custo Anual Recomendado"
+        icon: mdi:currency-eur
+      - entity: sensor.potential_annual_savings
+        name: "Poupança Potencial"
+        icon: mdi:trending-up
+      - type: divider
+      - entity: sensor.consumption_analysis_energy
+        name: "Consumo Anual Estimado"
+        icon: mdi:lightning-bolt
+      - entity: binary_sensor.tariff_data_quality
+        name: "Qualidade dos Dados"
+        icon: mdi:chart-line
+
+style: |
+  ha-card {
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    background: linear-gradient(135deg, var(--primary-color) 0%, var(--accent-color) 100%);
+    color: white;
+  }
+  .primary {
+    font-weight: 600 !important;
+  }
+  .secondary {
+    opacity: 0.9 !important;
+  }

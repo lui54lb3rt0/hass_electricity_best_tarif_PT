@@ -1,0 +1,10 @@
+{
+  "name": "Tarifários Eletricidade PT",
+  "content_in_root": false,
+  "country": "PT",
+  "domain": "hass_tarifarios_eletricidade_pt",
+  "homeassistant": "2023.0.0",
+  "render_readme": true,
+  "zip_release": false,
+  "filename": "hass_tarifarios_eletricidade_pt.zip"
+}

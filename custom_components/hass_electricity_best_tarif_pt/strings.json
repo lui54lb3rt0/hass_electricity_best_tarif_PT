@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Energy Provider",
+        "description": "Choose the energy provider (Comercializador) you want to monitor.",
+        "data": {
+          "comercializador": "Energy Provider"
+        }
+      },
+      "config": {
+        "title": "Configure {comercializador}",
+        "description": "Configure power capacity and select specific offers for {comercializador}.",
+        "data": {
+          "pot_cont": "Contracted Power (kVA)",
+          "codigos_oferta": "Available Offers (Select multiple if desired)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to data source",
+      "no_data": "No energy providers found in data"
+    },
+    "abort": {
+      "already_configured": "This configuration is already set up"
+    }
+  },
+  "title": "Portuguese Electricity Tariffs"
+}

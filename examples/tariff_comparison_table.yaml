@@ -1,0 +1,102 @@
+type: custom:auto-entities
+card:
+  type: custom:fold-entity-row
+  head:
+    type: section
+    label: "Comparação de Tarifários"
+  entities: []
+filter:
+  include:
+    - entity_id: "sensor.*tarif*"
+      attributes:
+        comercializador: "*"
+  exclude:
+    - entity_id: "*recommendation*"
+    - entity_id: "*savings*"
+    - entity_id: "*comparison*"
+    - entity_id: "*analysis*"
+card_mod:
+  style: |
+    #states > * {
+      margin: 0 !important;
+    }
+sort:
+  method: attribute
+  attribute: termo_fixo_eur_dia
+  numeric: true
+
+# Alternative: Manual table for better control
+type: markdown
+content: |
+  ## 📊 Comparação de Tarifários
+
+  | Fornecedor | Tarifa | Custo Anual | Termo Fixo | Poupança |
+  |------------|--------|-------------|------------|----------|
+  {% for entity_id in integration_entities('hass_tarifarios_eletricidade_pt') -%}
+    {%- if 'sensor.' in entity_id and 'recommendation' not in entity_id -%}
+      {%- set entity = states[entity_id] -%}
+      {%- if entity and entity.attributes.comercializador -%}
+        {%- set provider = entity.attributes.comercializador -%}
+        {%- set tariff = entity.attributes.nome_oferta_comercial or entity.attributes.codigo_original -%}
+        {%- set fixed_cost = entity.attributes.termo_fixo_eur_dia -%}
+        {%- set annual_cost = (fixed_cost | float(0) * 365.25) if fixed_cost else 'N/A' -%}
+        {%- set best_cost = state_attr('sensor.best_tariff_recommendation', 'annual_cost') | float(0) -%}
+        {%- set current_cost = annual_cost if annual_cost != 'N/A' else 0 -%}
+        {%- set savings = (current_cost - best_cost) if current_cost > 0 and best_cost > 0 else 0 -%}
+  | {{ provider }} | {{ tariff }} | €{{ "%.0f" | format(current_cost) if current_cost > 0 else 'N/A' }} | €{{ "%.2f" | format(fixed_cost) if fixed_cost else 'N/A' }}/dia | {{ "+€%.0f" | format(savings) if savings > 0 else "✅ Melhor" if savings == 0 else "€%.0f" | format(savings) }} |
+      {%- endif -%}
+    {%- endif -%}
+  {%- endfor %}
+
+  ---
+  
+  ### 💡 Legenda:
+  - **✅ Melhor**: Tarifa recomendada
+  - **+€XX**: Custo adicional comparado à melhor
+  - **-€XX**: Poupança comparada à melhor
+  
+  📅 *Última atualização: {{ state_attr('sensor.best_tariff_recommendation', 'analysis_timestamp')[:19] | default('N/A') }}*
+
+# Enhanced version with ApexCharts
+---
+type: custom:apexcharts-card
+header:
+  title: "Top 10 Tarifários por Custo"
+  show: true
+chart_type: bar
+series:
+  - entity: sensor.tariff_comparison
+    attribute: recommended
+    name: "Custo Anual"
+    color: '#2196f3'
+    data_generator: |
+      const comparisonData = entity.attributes;
+      if (!comparisonData || !comparisonData.alternatives) return [];
+      
+      // Get top 10 alternatives plus recommended
+      const tariffs = [comparisonData.recommended, ...comparisonData.alternatives.slice(0, 9)];
+      
+      return tariffs.map((tariff, index) => [
+        tariff.tariff_name || tariff.tariff_code,
+        tariff.annual_cost
+      ]);
+apex_config:
+  chart:
+    type: bar
+    horizontal: true
+  xaxis:
+    title:
+      text: 'Custo Anual (€)'
+  yaxis:
+    title:
+      text: 'Tarifários'
+  tooltip:
+    y:
+      formatter: |
+        EVAL:function(val) {
+          return '€' + val.toFixed(0) + '/ano'
+        }
+  plotOptions:
+    bar:
+      horizontal: true
+      barHeight: '70%'

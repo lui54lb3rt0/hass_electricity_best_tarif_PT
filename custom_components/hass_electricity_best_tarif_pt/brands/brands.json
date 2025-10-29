@@ -1,0 +1,6 @@
+{
+  "hass_tarifarios_eletricidade_pt": {
+    "name": "Tarifários Eletricidade PT",
+    "integrations": ["hass_tarifarios_eletricidade_pt"]
+  }
+}

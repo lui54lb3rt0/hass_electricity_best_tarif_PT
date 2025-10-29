@@ -1,0 +1,153 @@
+type: custom:stack-in-card
+cards:
+  - type: custom:mushroom-title-card
+    title: "Análise de Consumo"
+    subtitle: >
+      {% set sensor = state_attr('sensor.consumption_analysis_energy', 'energy_sensor') %}
+      {% set days = state_attr('sensor.consumption_analysis_energy', 'analysis_days') %}
+      {% if sensor and days %}
+        Baseado em {{ days }} dias de histórico
+      {% else %}
+        Aguardando dados...
+      {% endif %}
+
+  - type: horizontal-stack
+    cards:
+      - type: custom:mushroom-template-card
+        primary: "Consumo Anual"
+        secondary: >
+          {% set annual = states('sensor.consumption_analysis_energy') | float(0) %}
+          {{ "%.0f"|format(annual) }} kWh
+        icon: mdi:lightning-bolt
+        icon_color: blue
+        layout: vertical
+        
+      - type: custom:mushroom-template-card
+        primary: "Consumo Diário"
+        secondary: >
+          {% set daily = state_attr('sensor.consumption_analysis_energy', 'daily_average_kwh') | float(0) %}
+          {{ "%.1f"|format(daily) }} kWh
+        icon: mdi:calendar-today
+        icon_color: green
+        layout: vertical
+        
+      - type: custom:mushroom-template-card
+        primary: "Qualidade"
+        secondary: >
+          {% set quality = state_attr('sensor.consumption_analysis_energy', 'data_quality') | float(0) %}
+          {{ "%.0f"|format(quality) }}%
+        icon: >
+          {% set quality = state_attr('sensor.consumption_analysis_energy', 'data_quality') | float(0) %}
+          {% if quality > 90 %}
+            mdi:check-circle
+          {% elif quality > 70 %}
+            mdi:alert-circle
+          {% else %}
+            mdi:close-circle
+          {% endif %}
+        icon_color: >
+          {% set quality = state_attr('sensor.consumption_analysis_energy', 'data_quality') | float(0) %}
+          {% if quality > 90 %}
+            green
+          {% elif quality > 70 %}
+            orange
+          {% else %}
+            red
+          {% endif %}
+        layout: vertical
+
+  - type: custom:apexcharts-card
+    header:
+      title: "Distribuição por Períodos Tarifários"
+      show: true
+    chart_type: donut
+    series:
+      - entity: sensor.consumption_analysis_energy
+        attribute: peak_percentage
+        name: "Horas de Ponta"
+        color: '#ff6b6b'
+      - entity: sensor.consumption_analysis_energy
+        attribute: intermediate_percentage
+        name: "Horas Cheias"
+        color: '#ffa726'
+      - entity: sensor.consumption_analysis_energy
+        attribute: off_peak_percentage
+        name: "Horas de Vazio"
+        color: '#66bb6a'
+    apex_config:
+      legend:
+        position: bottom
+      plotOptions:
+        pie:
+          donut:
+            size: '60%'
+      dataLabels:
+        enabled: true
+        formatter: |
+          EVAL:function(val) {
+            return val.toFixed(1) + '%'
+          }
+
+  - type: custom:apexcharts-card
+    header:
+      title: "Padrão de Consumo por Hora"
+      show: true
+    graph_span: 24h
+    span:
+      end: hour
+    chart_type: column
+    series:
+      - entity: sensor.consumption_analysis_energy
+        attribute: hourly_averages
+        name: "Consumo Médio"
+        color: '#2196f3'
+        data_generator: |
+          const hourlyData = entity.attributes.hourly_averages;
+          if (!hourlyData) return [];
+          return Object.entries(hourlyData).map(([hour, value]) => [
+            new Date().setHours(parseInt(hour), 0, 0, 0),
+            parseFloat(value)
+          ]);
+    apex_config:
+      xaxis:
+        type: datetime
+        labels:
+          format: 'HH:mm'
+      yaxis:
+        title:
+          text: 'kWh'
+      tooltip:
+        x:
+          format: 'HH:mm'
+
+  - type: entities
+    title: "Breakdown Detalhado"
+    show_header_toggle: false
+    entities:
+      - entity: sensor.consumption_analysis_energy
+        attribute: peak_consumption_kwh
+        name: "Consumo em Ponta"
+        icon: mdi:trending-up
+      - entity: sensor.consumption_analysis_energy
+        attribute: intermediate_consumption_kwh
+        name: "Consumo em Cheias"
+        icon: mdi:trending-neutral
+      - entity: sensor.consumption_analysis_energy
+        attribute: off_peak_consumption_kwh
+        name: "Consumo em Vazio"
+        icon: mdi:trending-down
+      - type: divider
+      - entity: sensor.consumption_analysis_energy
+        attribute: analysis_period_start
+        name: "Início da Análise"
+        icon: mdi:calendar-start
+      - entity: sensor.consumption_analysis_energy
+        attribute: analysis_period_end
+        name: "Fim da Análise"
+        icon: mdi:calendar-end
+
+style: |
+  ha-card {
+    border-radius: 12px;
+    border: 1px solid var(--divider-color);
+  }

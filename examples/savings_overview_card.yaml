@@ -1,0 +1,164 @@
+type: custom:stack-in-card
+cards:
+  - type: custom:mushroom-title-card
+    title: "💰 Potencial de Poupança"
+    subtitle: >
+      {% set timestamp = state_attr('sensor.best_tariff_recommendation', 'analysis_timestamp') %}
+      {% if timestamp %}
+        Análise de {{ timestamp[:10] }}
+      {% else %}
+        Aguardando análise...
+      {% endif %}
+
+  - type: horizontal-stack
+    cards:
+      - type: custom:gauge-card
+        entity: sensor.potential_annual_savings
+        min: 0
+        max: 500
+        severity:
+          green: 100
+          yellow: 50
+          red: 0
+        title: "Poupança Anual"
+        unit: "€"
+        
+      - type: custom:gauge-card
+        entity: sensor.potential_annual_savings
+        attribute: savings_percentage
+        min: 0
+        max: 30
+        severity:
+          green: 10
+          yellow: 5
+          red: 0
+        title: "Percentagem"
+        unit: "%"
+
+  - type: custom:apexcharts-card
+    header:
+      title: "Evolução da Poupança Potencial"
+      show: true
+    graph_span: 7d
+    series:
+      - entity: sensor.potential_annual_savings
+        name: "Poupança Anual"
+        color: '#4caf50'
+        stroke_width: 3
+        curve: smooth
+      - entity: sensor.potential_annual_savings
+        attribute: monthly_savings
+        name: "Poupança Mensal"
+        color: '#2196f3'
+        stroke_width: 2
+        curve: smooth
+        transform: "return x * 12;"  # Convert to annual equivalent
+    apex_config:
+      yaxis:
+        - title:
+            text: 'Euros (€)'
+      stroke:
+        curve: smooth
+      markers:
+        size: 4
+
+  - type: custom:mushroom-template-card
+    primary: >
+      {% set current_cost = state_attr('sensor.best_tariff_recommendation', 'current_annual_cost') %}
+      {% set recommended_cost = state_attr('sensor.best_tariff_recommendation', 'annual_cost') %}
+      {% if current_cost and recommended_cost %}
+        Tarifa Atual: €{{ "%.0f"|format(current_cost) }} → Recomendada: €{{ "%.0f"|format(recommended_cost) }}
+      {% else %}
+        Configure a sua tarifa atual para ver a comparação
+      {% endif %}
+    secondary: >
+      {% set payback = state_attr('sensor.potential_annual_savings', 'payback_period_years') %}
+      {% if payback %}
+        Retorno do investimento em {{ "%.1f"|format(payback) }} anos
+      {% endif %}
+    icon: mdi:calculator
+    icon_color: green
+    layout: horizontal
+
+  - type: conditional
+    conditions:
+      - entity: sensor.potential_annual_savings
+        state_not: "0"
+    card:
+      type: custom:bar-card
+      entities:
+        - entity: sensor.potential_annual_savings
+          name: "Poupança Anual"
+          color: '#4caf50'
+        - entity: sensor.potential_annual_savings
+          attribute: monthly_savings
+          name: "Poupança Mensal"
+          color: '#2196f3'
+          value_template: "{{ (value | float * 12) | round(0) }}"
+      positions:
+        icon: outside
+        indicator: outside
+        name: outside
+      height: 60px
+      max: 500
+      unit_of_measurement: "€"
+
+  - type: entities
+    title: "Breakdown Financeiro"
+    show_header_toggle: false
+    entities:
+      - entity: sensor.best_tariff_recommendation
+        attribute: current_annual_cost
+        name: "Custo Atual (Anual)"
+        icon: mdi:currency-eur
+      - entity: sensor.best_tariff_recommendation
+        attribute: annual_cost
+        name: "Custo Recomendado (Anual)"
+        icon: mdi:currency-eur-off
+      - type: divider
+      - entity: sensor.potential_annual_savings
+        attribute: monthly_savings
+        name: "Poupança Mensal"
+        icon: mdi:calendar-month
+      - entity: sensor.potential_annual_savings
+        attribute: savings_percentage
+        name: "Percentagem de Poupança"
+        icon: mdi:percent
+      - entity: sensor.potential_annual_savings
+        attribute: payback_period_years
+        name: "Período de Retorno"
+        icon: mdi:clock-outline
+
+  - type: conditional
+    conditions:
+      - entity: sensor.potential_annual_savings
+        state_not: "0"
+    card:
+      type: markdown
+      content: |
+        ## 💡 Dicas de Poupança
+        
+        {% set savings = states('sensor.potential_annual_savings') | float(0) %}
+        {% set percentage = state_attr('sensor.potential_annual_savings', 'savings_percentage') | float(0) %}
+        
+        {% if savings > 100 %}
+        🎉 **Excelente oportunidade!** Com uma poupança de €{{ "%.0f"|format(savings) }} por ano ({{ "%.1f"|format(percentage) }}%), vale definitivamente a pena considerar a mudança.
+        {% elif savings > 50 %}
+        👍 **Boa oportunidade!** Uma poupança de €{{ "%.0f"|format(savings) }} por ano pode fazer a diferença no seu orçamento.
+        {% elif savings > 20 %}
+        💭 **Considere a mudança.** Embora a poupança seja modesta (€{{ "%.0f"|format(savings) }}/ano), pode acumular ao longo do tempo.
+        {% else %}
+        ℹ️ **Poupança limitada.** A diferença é pequena, mas pode considerar outros fatores como atendimento ao cliente ou serviços adicionais.
+        {% endif %}
+        
+        ---
+        
+        ### 📈 Impacto a Longo Prazo:
+        - **5 anos**: €{{ "%.0f"|format(savings * 5) }}
+        - **10 anos**: €{{ "%.0f"|format(savings * 10) }}
+
+style: |
+  ha-card {
+    border-radius: 12px;
+    background: linear-gradient(135deg, #e8f5e8 0%, #f1f8e9 100%);
+  }
