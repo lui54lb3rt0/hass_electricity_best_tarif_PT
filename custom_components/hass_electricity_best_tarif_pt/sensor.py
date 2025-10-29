@@ -38,11 +38,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Convert string values to boolean (common issue with config entries)
     if isinstance(enable_analysis_raw, str):
         enable_analysis = enable_analysis_raw.lower() in ("true", "1", "yes", "on")
-        _LOGGER.debug("🔄 Converted string config value '%s' to boolean: %s", enable_analysis_raw, enable_analysis)
+        _LOGGER.warning("🔄 CONVERTED string config value '%s' to boolean: %s", enable_analysis_raw, enable_analysis)
     else:
         enable_analysis = bool(enable_analysis_raw)
     
-    _LOGGER.info("🔍 Raw config value: %s (type: %s) → Boolean: %s", enable_analysis_raw, type(enable_analysis_raw), enable_analysis)
+    _LOGGER.warning("🔍 RAW CONFIG DEBUG: value=%s (type: %s) → Boolean: %s", enable_analysis_raw, type(enable_analysis_raw), enable_analysis)
     
     # INTELLIGENT AUTOMATIC FIX: Only repair when there are actual configuration issues
     needs_repair = False
@@ -65,6 +65,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     elif "enable_consumption_analysis" not in config:
         needs_repair = True
         repair_reason = "legacy configuration without consumption analysis setting"
+    
+    # Scenario 3: User has consumption analysis key but it's False, and they claim they enabled it
+    # This suggests a config save issue or string/boolean conversion problem
+    elif not enable_analysis and "enable_consumption_analysis" in config:
+        # Check if user intended to enable it but there's a config issue
+        if "energy_sensor" not in config:
+            needs_repair = True
+            repair_reason = "consumption analysis disabled but no energy sensor configured - possible UI save issue"
     
     # If consumption analysis is explicitly disabled (False), respect that choice
     # and don't automatically enable it
@@ -231,6 +239,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.warning("❌ Consumption analysis is DISABLED in configuration")
         _LOGGER.warning("❌ Expected config key 'enable_consumption_analysis' = True, got: %s (type: %s)", 
                        config.get("enable_consumption_analysis"), type(config.get("enable_consumption_analysis")))
+        _LOGGER.warning("❌ Full config: %s", dict(config))
         _LOGGER.warning("❌ Current config keys: %s", list(config.keys()))
         _LOGGER.info("💡 To enable analysis, delete and recreate the integration with consumption analysis enabled")
     
