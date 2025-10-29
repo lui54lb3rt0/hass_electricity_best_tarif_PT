@@ -787,40 +787,50 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 energy_sensors = []
                 
                 for entity in entity_registry.entities.values():
-                    # Check for power sensors (W, kW, MW) - PREFERRED
-                    is_power_sensor = (
-                        entity.device_class == "power" or
-                        "power" in entity.entity_id.lower() or
-                        "_w_" in entity.entity_id.lower() or
-                        "watts" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["W", "kW", "MW", "mW", "watts", "watt"]
-                    )
-                    
-                    # Check for energy sensors (kWh, Wh) - FALLBACK
-                    is_energy_sensor = (
-                        entity.device_class == "energy" or 
-                        "energy" in entity.entity_id.lower() or
-                        "kwh" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["kWh", "Wh", "MWh"]
-                    )
-                    
-                    if is_power_sensor or is_energy_sensor:
-                        state = self.hass.states.get(entity.entity_id)
-                        if state and state.state not in ["unknown", "unavailable"]:
-                            friendly_name = state.attributes.get("friendly_name", entity.entity_id)
-                            unit = state.attributes.get("unit_of_measurement", "")
-                            
-                            sensor_info = {
-                                "entity_id": entity.entity_id,
-                                "name": f"{friendly_name} ({unit}) [{entity.entity_id}]"
-                            }
-                            
-                            if is_power_sensor:
-                                sensor_info["name"] = f"⚡ Power (W) - {sensor_info['name']}"
-                                power_sensors.append(sensor_info)
-                            elif is_energy_sensor:
-                                sensor_info["name"] = f"🔋 Energy (kWh) - {sensor_info['name']}"
-                                energy_sensors.append(sensor_info)
+                    try:
+                        # Get entity attributes safely
+                        unit_of_measurement = entity.unit_of_measurement or ""
+                        device_class = entity.device_class or ""
+                        entity_id_lower = entity.entity_id.lower() if entity.entity_id else ""
+                        
+                        # Check for power sensors (W, kW, MW) - PREFERRED
+                        is_power_sensor = (
+                            device_class == "power" or
+                            "power" in entity_id_lower or
+                            "_w_" in entity_id_lower or
+                            "watts" in entity_id_lower or
+                            unit_of_measurement in ["W", "kW", "MW", "mW", "watts", "watt"]
+                        )
+                        
+                        # Check for energy sensors (kWh, Wh) - FALLBACK
+                        is_energy_sensor = (
+                            device_class == "energy" or 
+                            "energy" in entity_id_lower or
+                            "kwh" in entity_id_lower or
+                            unit_of_measurement in ["kWh", "Wh", "MWh"]
+                        )
+                        
+                        if is_power_sensor or is_energy_sensor:
+                            state = self.hass.states.get(entity.entity_id)
+                            if state and state.state not in ["unknown", "unavailable"]:
+                                friendly_name = state.attributes.get("friendly_name", entity.entity_id)
+                                unit = state.attributes.get("unit_of_measurement", "") or ""
+                                
+                                sensor_info = {
+                                    "entity_id": entity.entity_id,
+                                    "name": f"{friendly_name} ({unit}) [{entity.entity_id}]"
+                                }
+                                
+                                if is_power_sensor:
+                                    sensor_info["name"] = f"⚡ Power (W) - {sensor_info['name']}"
+                                    power_sensors.append(sensor_info)
+                                elif is_energy_sensor:
+                                    sensor_info["name"] = f"🔋 Energy (kWh) - {sensor_info['name']}"
+                                    energy_sensors.append(sensor_info)
+                    except Exception as entity_err:
+                        _LOGGER.debug("Error processing entity %s: %s", 
+                                    getattr(entity, 'entity_id', 'unknown'), entity_err)
+                        continue
                 
                 # Prioritize power sensors first, then energy sensors
                 self._energy_sensors = power_sensors + energy_sensors
@@ -828,7 +838,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                              len(power_sensors), len(energy_sensors), len(self._energy_sensors))
                 
             except Exception as e:
-                _LOGGER.error("Error loading power/energy sensors: %s", e)
+                _LOGGER.error("Error loading power/energy sensors: %s", e, exc_info=True)
                 errors["base"] = "sensor_discovery_failed"
 
         if user_input is not None:
@@ -836,6 +846,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if not self._energy_sensors:
             errors["base"] = "no_energy_sensors"
+            _LOGGER.warning("No power or energy sensors found for consumption analysis")
         
         # Create sensor selection options
         sensor_options = {sensor["entity_id"]: sensor["name"] for sensor in self._energy_sensors}
@@ -845,23 +856,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._available_tariffs:
             tariff_options = {code: display_name for code, display_name in self._available_tariffs.items()}
         
-        schema = vol.Schema({
-            vol.Required("power_sensor"): vol.In(sensor_options),
+        # Build schema - handle case where no sensors are found
+        schema_dict = {
+            vol.Required("power_sensor"): vol.In(sensor_options) if sensor_options else str,
             vol.Optional("analysis_days", default=30): vol.All(int, vol.Range(min=7, max=365)),
             vol.Optional("tariff_type", default="bi_hourly"): vol.In({
                 "bi_hourly": "Bi-horário (Ponta/Vazio)",
                 "tri_hourly": "Tri-horário (Ponta/Cheias/Vazio)"
             }),
-            vol.Optional("current_tariff_code"): vol.In(tariff_options) if tariff_options else str,
-        })
+        }
+        
+        # Only add tariff selection if options exist
+        if tariff_options:
+            schema_dict[vol.Optional("current_tariff_code")] = vol.In(tariff_options)
+        
+        schema = vol.Schema(schema_dict)
 
         return self.async_show_form(
             step_id="consumption_config",
             data_schema=schema,
             errors=errors,
             description_placeholders={
-                "comercializador": self._selected_comercializador,
-                "energy_type": ENERGY_TYPE_OPTIONS[self._selected_energy_type],
+                "comercializador": self._selected_comercializador or "Unknown",
+                "energy_type": ENERGY_TYPE_OPTIONS.get(self._selected_energy_type, "Unknown"),
                 "tariff_count": len(self._available_tariffs) if self._available_tariffs else 0
             }
         )
@@ -912,7 +929,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 config_data["enable_consumption_analysis"] = False
 
-            title = f"{self._selected_comercializador} ({ENERGY_TYPE_OPTIONS[self._selected_energy_type]})"
+            title = f"{self._selected_comercializador} ({ENERGY_TYPE_OPTIONS.get(self._selected_energy_type, 'Unknown')})"
             if consumption_config:
                 title += " - Smart Analysis (All Tariffs)"
             else:
@@ -931,13 +948,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(schema_dict)
 
         description_placeholders = {
-            "comercializador": self._selected_comercializador,
-            "energy_type": ENERGY_TYPE_OPTIONS[self._selected_energy_type]
+            "comercializador": self._selected_comercializador or "Unknown",
+            "energy_type": ENERGY_TYPE_OPTIONS.get(self._selected_energy_type, "Unknown")
         }
         
         if consumption_config:
-            description_placeholders["consumption_sensor"] = consumption_config["energy_sensor"]
-            description_placeholders["analysis_info"] = f"Analysis: {consumption_config['analysis_days']} days, {consumption_config['tariff_type']}"
+            description_placeholders["consumption_sensor"] = consumption_config.get("power_sensor", "Unknown")
+            description_placeholders["analysis_info"] = f"Analysis: {consumption_config.get('analysis_days', 30)} days, {consumption_config.get('tariff_type', 'bi_hourly')}"
 
         return self.async_show_form(
             step_id="config",
@@ -973,8 +990,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             
             # If enabling analysis, update related settings
             if user_input.get("enable_consumption_analysis", False):
-                if user_input.get("energy_sensor"):
-                    new_data["energy_sensor"] = user_input["energy_sensor"]
+                if user_input.get("power_sensor"):
+                    new_data["power_sensor"] = user_input["power_sensor"]
                 if user_input.get("analysis_days"):
                     new_data["analysis_days"] = user_input["analysis_days"]
                 if user_input.get("tariff_type"):
@@ -996,38 +1013,56 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if not self._energy_sensors:
             try:
                 entity_registry = async_get_entity_registry(self.hass)
+                power_sensors = []
                 energy_sensors = []
                 
                 for entity in entity_registry.entities.values():
-                    # Look for both energy sensors (kWh) and power sensors (W)
-                    is_energy_sensor = (
-                        entity.device_class == "energy" or 
-                        "energy" in entity.entity_id.lower() or
-                        "kwh" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["kWh", "Wh", "MWh"]
-                    )
-                    
-                    is_power_sensor = (
-                        entity.device_class == "power" or
-                        "power" in entity.entity_id.lower() or
-                        "_w_" in entity.entity_id.lower() or
-                        "watts" in entity.entity_id.lower() or
-                        entity.unit_of_measurement in ["W", "kW", "MW", "watts", "watt"]
-                    )
-                    
-                    if is_energy_sensor or is_power_sensor:
-                        state = self.hass.states.get(entity.entity_id)
-                        if state and state.state not in ["unknown", "unavailable"]:
-                            friendly_name = state.attributes.get("friendly_name", entity.entity_id)
-                            unit = state.attributes.get("unit_of_measurement", "")
-                            sensor_type = "⚡ Power" if is_power_sensor else "🔋 Energy"
-                            
-                            energy_sensors.append({
-                                "entity_id": entity.entity_id,
-                                "name": f"{sensor_type} - {friendly_name} ({unit}) [{entity.entity_id}]"
-                            })
+                    try:
+                        # Get entity attributes safely
+                        unit_of_measurement = entity.unit_of_measurement or ""
+                        device_class = entity.device_class or ""
+                        entity_id_lower = entity.entity_id.lower() if entity.entity_id else ""
+                        
+                        # Check for power sensors (W, kW, MW) - PREFERRED
+                        is_power_sensor = (
+                            device_class == "power" or
+                            "power" in entity_id_lower or
+                            "_w_" in entity_id_lower or
+                            "watts" in entity_id_lower or
+                            unit_of_measurement in ["W", "kW", "MW", "mW", "watts", "watt"]
+                        )
+                        
+                        # Check for energy sensors (kWh, Wh) - FALLBACK
+                        is_energy_sensor = (
+                            device_class == "energy" or 
+                            "energy" in entity_id_lower or
+                            "kwh" in entity_id_lower or
+                            unit_of_measurement in ["kWh", "Wh", "MWh"]
+                        )
+                        
+                        if is_power_sensor or is_energy_sensor:
+                            state = self.hass.states.get(entity.entity_id)
+                            if state and state.state not in ["unknown", "unavailable"]:
+                                friendly_name = state.attributes.get("friendly_name", entity.entity_id)
+                                unit = state.attributes.get("unit_of_measurement", "") or ""
+                                
+                                sensor_info = {
+                                    "entity_id": entity.entity_id,
+                                    "name": f"{friendly_name} ({unit}) [{entity.entity_id}]"
+                                }
+                                
+                                if is_power_sensor:
+                                    sensor_info["name"] = f"⚡ Power (W) - {sensor_info['name']}"
+                                    power_sensors.append(sensor_info)
+                                elif is_energy_sensor:
+                                    sensor_info["name"] = f"🔋 Energy (kWh) - {sensor_info['name']}"
+                                    energy_sensors.append(sensor_info)
+                    except Exception as entity_err:
+                        _LOGGER.debug("Error processing entity in options: %s", entity_err)
+                        continue
                 
-                self._energy_sensors = energy_sensors
+                # Prioritize power sensors first, then energy sensors
+                self._energy_sensors = power_sensors + energy_sensors
                 
             except Exception as e:
                 _LOGGER.error("Error loading energy sensors in options: %s", e)
@@ -1038,7 +1073,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             sensor_options = {sensor["entity_id"]: sensor["name"] for sensor in self._energy_sensors}
         
         # Get current values for defaults
-        current_energy_sensor = current_data.get("energy_sensor")
+        current_power_sensor = current_data.get("power_sensor")
         current_analysis_days = current_data.get("analysis_days", 30)
         current_tariff_type = current_data.get("tariff_type", "bi_hourly")
         current_tariff_code = current_data.get("current_tariff_code")
@@ -1050,9 +1085,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         # Only show consumption options if analysis is enabled or if user wants to enable it
         if current_enable_analysis or (user_input and user_input.get("enable_consumption_analysis")):
             if sensor_options:
-                schema_dict[vol.Optional("energy_sensor", default=current_energy_sensor)] = vol.In(sensor_options)
+                schema_dict[vol.Optional("power_sensor", default=current_power_sensor)] = vol.In(sensor_options)
             else:
-                schema_dict[vol.Optional("energy_sensor", default=current_energy_sensor)] = str
+                schema_dict[vol.Optional("power_sensor", default=current_power_sensor)] = str
                 
             schema_dict.update({
                 vol.Optional("analysis_days", default=current_analysis_days): vol.All(int, vol.Range(min=7, max=365)),
