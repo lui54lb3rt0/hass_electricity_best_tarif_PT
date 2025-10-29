@@ -1,348 +1,358 @@
-"""Sensor platform for Tarifários Eletricidade PT (only offer sensors)."""
+"""Enhanced sensor platform for Smart Tariff Analyzer."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import math
-import unicodedata
+from datetime import datetime, timezone, timedelta
 import logging
+from typing import Dict, Any, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.const import UnitOfEnergy
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
 from .const import DOMAIN, VERSION
+from .consumption_analyzer import ConsumptionAnalyzer, ConsumptionPattern
+from .recommendation_engine import TariffRecommendationEngine
+from .cost_calculator import find_best_tariff_for_consumption
 
 _LOGGER = logging.getLogger(__name__)
 
-CODE_COL_CANDIDATES = ["Código da oferta comercial", "COD_Proposta", "CODProposta"]
-NAME_COL_CANDIDATES = ["Nome da oferta comercial", "NomeProposta", "Nome Proposta", "Nome"]
-POT_COL_CANDIDATES  = ["Potência contratada__norm", "Pot_Cont__norm", "Potência contratada", "Pot_Cont"]
-TERMO_FIXO_CANDIDATES = ["Termo fixo (€/dia)", "TF"]
-
-
-def _normalize(k: str) -> str:
-    k2 = unicodedata.normalize("NFKD", k).encode("ascii", "ignore").decode()
-    k2 = k2.lower()
-    for old, new in (("€", "eur"), ("%", "pct"), ("/", "_"), ("-", "_"), ("|", "_"), (":", "_")):
-        k2 = k2.replace(old, new)
-    for ch in "()[]{}":
-        k2 = k2.replace(ch, "")
-    while "  " in k2:
-        k2 = k2.replace("  ", " ")
-    k2 = k2.strip().replace(" ", "_")
-    while "__" in k2:
-        k2 = k2.replace("__", "_")
-    return k2
-
-
-def _clean(v):
-    """Clean and normalize values, returning appropriate defaults for empty/unknown values."""
-    if v is None:
-        return None
-    if isinstance(v, float) and math.isnan(v):
-        return None
-    if isinstance(v, str):
-        # Strip whitespace and check for empty or "unknown" values
-        cleaned = v.strip()
-        if not cleaned or cleaned.lower() in ('nan', 'na', 'n/a', 'unknown', 'null', 'none', ''):
-            return None
-        return cleaned
-    return v
-
-
-def _clean_for_display(v, field_name=None):
-    """Clean values for display, providing better defaults than 'Unknown'."""
-    cleaned = _clean(v)
-    if cleaned is None:
-        # Provide contextual defaults based on field type
-        if field_name and any(term in field_name.lower() for term in ['url', 'link', 'contacto', 'email']):
-            return ''  # Empty string for contact fields
-        elif field_name and any(term in field_name.lower() for term in ['data', 'date']):
-            return ''  # Empty string for dates
-        elif field_name and any(term in field_name.lower() for term in ['custo', 'preco', 'price', 'cost']):
-            return '0'  # Zero for monetary fields that might be optional
-        elif field_name and any(term in field_name.lower() for term in ['escalao', 'operador', 'rede']):
-            return 'N/A'  # More appropriate for technical fields
-        else:
-            return None  # Let Home Assistant handle as Unknown
-    return cleaned
-
-
-def _norm_pot(val):
-    if not val:
-        return None
-    # Normalize to dot format for consistent comparison
-    return str(val).replace(",", ".").strip()
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    """Set up the sensor platform."""
+    """Set up the smart tariff analyzer sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     config = hass.data[DOMAIN][entry.entry_id]["config"]
     
-    # Get data from coordinator
-    df = coordinator.data
-    if df is None or df.empty:
-        _LOGGER.warning("No data available from coordinator.")
-        return
-
-    ts = datetime.now(timezone.utc)
     entities = []
-
-    # Always create traditional offer sensors
-    offer_sensors = await _create_offer_sensors(df, coordinator, entry.entry_id, config, ts)
-    entities.extend(offer_sensors)
     
-    # Create enhanced sensors if consumption analysis is enabled
+    # Only create analysis sensors if consumption analysis is enabled
     if config.get("enable_consumption_analysis", False):
-        analysis_sensors = await _create_analysis_sensors(hass, entry, coordinator, config)
-        entities.extend(analysis_sensors)
-
-    async_add_entities(entities, True)
-
-
-async def _create_analysis_sensors(hass, entry, coordinator, config):
-    """Create consumption analysis and recommendation sensors."""
-    from .enhanced_sensor import (
-        ConsumptionAnalysisSensor, TariffRecommendationSensor, 
-        PotentialSavingsSensor, BestTariffComparisonSensor
-    )
-    from .recommendation_engine import TariffRecommendationEngine
-    
-    energy_sensor = config.get("energy_sensor")
-    analysis_days = config.get("analysis_days", 30)
-    tariff_type = config.get("tariff_type", "bi_hourly")
-    
-    if not energy_sensor:
-        _LOGGER.warning("No energy sensor configured for consumption analysis")
-        return []
-    
-    # Create recommendation engine
-    recommendation_engine = TariffRecommendationEngine()
-    
-    # Store the recommendation engine in the domain data for persistence
-    if "recommendation_engines" not in hass.data[DOMAIN]:
-        hass.data[DOMAIN]["recommendation_engines"] = {}
-    hass.data[DOMAIN]["recommendation_engines"][entry.entry_id] = recommendation_engine
-    
-    # Create analysis sensors
-    return [
-        ConsumptionAnalysisSensor(
-            coordinator, entry.entry_id, energy_sensor, analysis_days, tariff_type
-        ),
-        TariffRecommendationSensor(
-            coordinator, entry.entry_id, recommendation_engine, config
-        ),
-        PotentialSavingsSensor(
-            coordinator, entry.entry_id, recommendation_engine
-        ),
-        BestTariffComparisonSensor(
-            coordinator, entry.entry_id, recommendation_engine
-        ),
-    ]
-
-
-async def _create_offer_sensors(df, coordinator, entry_id, config, ts):
-    """Create traditional offer sensors."""
-
-    code_col = next((c for c in CODE_COL_CANDIDATES if c in df.columns), None)
-    name_col = next((c for c in NAME_COL_CANDIDATES if c in df.columns), None)
-    pot_norm_col = next((c for c in POT_COL_CANDIDATES if c in df.columns), None)
-    termo_fixo_col = next((c for c in TERMO_FIXO_CANDIDATES if c in df.columns), None)
-
-    if not code_col:
-        _LOGGER.error("Code column not found. Columns=%s", list(df.columns))
-        return []
-
-    entities = []
-    comercializador = config.get("comercializador", "unknown")
-    
-    # Group by offer code to avoid creating multiple entities for the same offer
-    # (which can happen when there are multiple billing cycles)
-    grouped_offers = {}
-    
-    for _, row in df.iterrows():
-        codigo = str(row[code_col])
+        _LOGGER.info("Setting up smart tariff analysis sensors")
         
-        # Skip if we already processed this offer code
-        if codigo in grouped_offers:
-            # Merge billing cycle data into existing offer
-            existing_attrs = grouped_offers[codigo]['attrs']
-            
-            # Add billing cycle specific data
-            ciclo_col = "Ciclo de contagem"
-            if ciclo_col in row and row[ciclo_col]:
-                ciclo = str(row[ciclo_col]).strip()
-                # Add cycle-specific pricing data
-                for k, v in row.to_dict().items():
-                    if any(price_term in k for price_term in ["Termo de energia", "TV", "TF"]):
-                        normalized_key = _normalize(f"{k}_{ciclo}")
-                        existing_attrs[normalized_key] = _clean_for_display(v, k)
-            continue
+        energy_sensor = config.get("energy_sensor")
+        analysis_days = config.get("analysis_days", 30)
+        tariff_type = config.get("tariff_type", "bi_hourly")
+        current_tariff_code = config.get("current_tariff_code")
         
-        # Get the commercial offer name (Nome da oferta comercial)
-        offer_name = None
-        if name_col and row.get(name_col):
-            offer_name = str(row[name_col]).strip()
+        if not energy_sensor:
+            _LOGGER.error("No energy sensor configured for consumption analysis")
+            return
         
-        # Create display name: Provider - Commercial Offer Name
-        if offer_name:
-            full_display_name = f"{comercializador} - {offer_name}"
-        else:
-            # Fallback if no offer name available
-            full_display_name = f"{comercializador} - Tarifa {codigo}"
-
-        # Get the termo fixo value for this row (prefer the first encountered)
-        termo_fixo_value = None
-        if termo_fixo_col and row.get(termo_fixo_col):
-            try:
-                termo_fixo_value = float(str(row[termo_fixo_col]).replace(",", "."))
-            except (ValueError, TypeError):
-                termo_fixo_value = None
-
-        raw = row.to_dict()
-        attrs = {}
-        for k, v in raw.items():
-            normalized_key = _normalize(k)
-            cleaned_value = _clean_for_display(v, k)
-            attrs[normalized_key] = cleaned_value
-            # Debug specific columns
-            if "vazio" in normalized_key.lower() and ("cheias" in normalized_key.lower() or normalized_key.lower().endswith("vazio")):
-                _LOGGER.debug("Attribute mapping: '%s' -> '%s' = %s", k, normalized_key, cleaned_value)
+        # Create recommendation engine
+        recommendation_engine = TariffRecommendationEngine()
         
-        attrs["codigo_original"] = codigo
-        attrs["comercializador"] = comercializador
-        attrs["nome_oferta_comercial"] = offer_name or f"Tarifa {codigo}"
-        attrs["termo_fixo_eur_dia"] = termo_fixo_value
-        attrs["integration_version"] = VERSION
-        attrs["last_refresh_iso"] = ts.isoformat()
-        if pot_norm_col and pot_norm_col in row:
-            attrs["potencia_norm"] = row[pot_norm_col]
-
-        # Store the offer data
-        grouped_offers[codigo] = {
-            'display_name': full_display_name,
-            'attrs': attrs,
-            'termo_fixo_value': termo_fixo_value,
-            'offer_name': offer_name
-        }
+        # Store the recommendation engine in the domain data
+        if "recommendation_engines" not in hass.data[DOMAIN]:
+            hass.data[DOMAIN]["recommendation_engines"] = {}
+        hass.data[DOMAIN]["recommendation_engines"][entry.entry_id] = recommendation_engine
+        
+        # Create analysis sensors
+        entities.extend([
+            ConsumptionAnalysisSensor(
+                coordinator, entry.entry_id, energy_sensor, analysis_days, tariff_type
+            ),
+            TariffRecommendationSensor(
+                coordinator, entry.entry_id, recommendation_engine, config
+            ),
+            PotentialSavingsSensor(
+                coordinator, entry.entry_id, recommendation_engine
+            ),
+            BestTariffComparisonSensor(
+                coordinator, entry.entry_id, recommendation_engine
+            ),
+        ])
+        
+        _LOGGER.info("Created %d smart analysis sensors", len(entities))
+    else:
+        _LOGGER.info("Consumption analysis disabled - no smart sensors created")
     
-    # Create entities from grouped offers
-    entities = []
-    for codigo, offer_data in grouped_offers.items():
-        entities.append(OfferSensor(
-            coordinator, 
-            entry_id, 
-            codigo, 
-            offer_data['display_name'], 
-            offer_data['attrs'], 
-            ts, 
-            offer_data['termo_fixo_value'], 
-            offer_data['offer_name']
-        ))
-
-    return entities
+    if entities:
+        async_add_entities(entities, True)
 
 
-class OfferSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a Tarifarios offer sensor."""
-    _attr_icon = "mdi:currency-eur"
-    _attr_device_class = None  # No device class for price values
-    _attr_unit_of_measurement = "€/day"
-
-    def __init__(self, coordinator, entry_id: str, codigo: str, name: str, attrs: dict, ts: datetime, termo_fixo_value: float = None, offer_name: str = None):
-        """Initialize the sensor."""
+class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for consumption analysis results."""
+    
+    _attr_icon = "mdi:chart-line"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL
+    
+    def __init__(self, coordinator, entry_id: str, energy_sensor: str, analysis_days: int, tariff_type: str):
+        """Initialize the consumption analysis sensor."""
         super().__init__(coordinator)
-        self._attr_name = name
+        self._energy_sensor = energy_sensor
+        self._analysis_days = analysis_days
+        self._tariff_type = tariff_type
         
-        # Simplified unique ID based on offer code only
-        # since we now group by offer and don't create separate entities for billing cycles
-        self._attr_unique_id = f"{entry_id}_{codigo}"
+        # Create a clean sensor name from the energy sensor
+        sensor_name = energy_sensor.split('.')[-1].replace('_', ' ').title()
+        self._attr_name = f"Consumption Analysis {sensor_name}"
+        self._attr_unique_id = f"{entry_id}_consumption_analysis"
         
-        # Debug log for troubleshooting
-        _LOGGER.debug("Creating sensor unique_id for offer %s: %s", codigo, self._attr_unique_id)
+        self._consumption_pattern: Optional[ConsumptionPattern] = None
+        self._last_analysis = None
+        
+        _LOGGER.info("Created consumption analysis sensor: %s", self._attr_name)
+        
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        
+        # Schedule periodic analysis updates every 6 hours
+        async_track_time_interval(
+            self.hass, self._async_update_analysis, timedelta(hours=6)
+        )
+        
+        # Run initial analysis
+        await self._async_update_analysis()
+    
+    async def _async_update_analysis(self, now=None):
+        """Update consumption analysis."""
+        try:
+            _LOGGER.debug("Starting consumption analysis for %s", self._energy_sensor)
             
-        self._codigo = codigo
-        self._attrs = attrs
-        self._ts = ts
-        self._termo_fixo_value = termo_fixo_value
-
+            analyzer = ConsumptionAnalyzer(self.hass)
+            self._consumption_pattern = await analyzer.analyze_consumption(
+                self._energy_sensor, self._analysis_days, self._tariff_type
+            )
+            
+            if self._consumption_pattern:
+                self._last_analysis = datetime.now(timezone.utc)
+                _LOGGER.info("Consumption analysis completed: %.2f kWh annual, %.1f%% data quality", 
+                           self._consumption_pattern.annual_total, 
+                           self._consumption_pattern.data_quality * 100)
+            else:
+                _LOGGER.warning("Consumption analysis failed - no pattern generated")
+                
+            self.async_write_ha_state()
+            
+        except Exception as e:
+            _LOGGER.error("Error updating consumption analysis for %s: %s", self._energy_sensor, e)
+    
     @property
     def native_value(self):
-        """Return the daily fixed term value in euros."""
-        if self.coordinator.last_update_success and self.coordinator.data is not None and not self.coordinator.data.empty:
-            # Try to get fresh termo fixo value from coordinator data
-            # Use the first matching row (since we group by offer code)
-            try:
-                code_col = next((c for c in CODE_COL_CANDIDATES if c in self.coordinator.data.columns), None)
-                termo_fixo_col = next((c for c in TERMO_FIXO_CANDIDATES if c in self.coordinator.data.columns), None)
-                
-                if code_col and termo_fixo_col:
-                    matching_rows = self.coordinator.data[self.coordinator.data[code_col].astype(str) == self._codigo]
-                    if not matching_rows.empty:
-                        row = matching_rows.iloc[0]  # Take first row for this offer
-                        if row.get(termo_fixo_col):
-                            try:
-                                return float(str(row[termo_fixo_col]).replace(",", "."))
-                            except (ValueError, TypeError):
-                                pass
-            except Exception as e:
-                _LOGGER.debug("Error getting fresh termo fixo for %s: %s", self._codigo, e)
-        
-        # Fallback to stored value
-        return self._termo_fixo_value
-
+        """Return the annual consumption estimate."""
+        if self._consumption_pattern:
+            return round(self._consumption_pattern.annual_total, 2)
+        return None
+    
     @property
     def extra_state_attributes(self):
-        """Return the state attributes with data from all billing cycles."""
-        # Update attributes with fresh data from coordinator if available
-        if self.coordinator.data is not None and not self.coordinator.data.empty:
-            try:
-                # Find all rows for this codigo in the fresh data
-                code_col = next((c for c in CODE_COL_CANDIDATES if c in self.coordinator.data.columns), None)
-                if code_col:
-                    matching_rows = self.coordinator.data[self.coordinator.data[code_col].astype(str) == self._codigo]
-                    if not matching_rows.empty:
-                        # Merge data from all rows (billing cycles) for this offer
-                        fresh_attrs = {}
-                        
-                        # Start with the first row as base
-                        base_row = matching_rows.iloc[0]
-                        for k, v in base_row.to_dict().items():
-                            normalized_key = _normalize(k)
-                            fresh_attrs[normalized_key] = _clean_for_display(v, k)
-                        
-                        # Add cycle-specific data from other rows
-                        ciclo_col = "Ciclo de contagem"
-                        for _, row in matching_rows.iterrows():
-                            if ciclo_col in row and row[ciclo_col]:
-                                ciclo = str(row[ciclo_col]).strip()
-                                # Add cycle-specific pricing data with cycle suffix
-                                for k, v in row.to_dict().items():
-                                    if any(price_term in k for price_term in ["Termo de energia", "TV"]):
-                                        normalized_key = _normalize(f"{k}_{ciclo}")
-                                        fresh_attrs[normalized_key] = _clean_for_display(v, k)
-                        
-                        fresh_attrs["codigo_original"] = self._codigo
-                        fresh_attrs["integration_version"] = VERSION
-                        fresh_attrs["last_refresh_iso"] = datetime.now(timezone.utc).isoformat()
-                        
-                        # Add summary of available billing cycles
-                        available_cycles = [str(row[ciclo_col]).strip() for _, row in matching_rows.iterrows() 
-                                          if ciclo_col in row and row[ciclo_col]]
-                        if available_cycles:
-                            fresh_attrs["ciclos_disponiveis"] = ", ".join(sorted(set(available_cycles)))
-                        
-                        return fresh_attrs
-            except Exception as e:
-                _LOGGER.debug("Error updating attributes for %s: %s", self._codigo, e)
+        """Return consumption analysis attributes."""
+        if not self._consumption_pattern:
+            return {
+                "status": "No analysis available",
+                "energy_sensor": self._energy_sensor,
+                "analysis_days": self._analysis_days,
+                "tariff_type": self._tariff_type
+            }
         
-        # Fallback to stored attributes
-        return self._attrs
+        return {
+            "energy_sensor": self._energy_sensor,
+            "analysis_days": self._analysis_days,
+            "tariff_type": self._tariff_type,
+            "daily_average_kwh": round(self._consumption_pattern.daily_total, 2),
+            "monthly_average_kwh": round(self._consumption_pattern.monthly_total, 2),
+            "peak_consumption_kwh": round(self._consumption_pattern.peak_consumption, 2),
+            "off_peak_consumption_kwh": round(self._consumption_pattern.off_peak_consumption, 2),
+            "intermediate_consumption_kwh": round(self._consumption_pattern.intermediate_consumption, 2),
+            "peak_percentage": round(self._consumption_pattern.peak_percentage, 1),
+            "off_peak_percentage": round(self._consumption_pattern.off_peak_percentage, 1),
+            "intermediate_percentage": round(self._consumption_pattern.intermediate_percentage, 1),
+            "data_quality": round(self._consumption_pattern.data_quality * 100, 1),
+            "analysis_period_start": self._consumption_pattern.analysis_start.isoformat() if self._consumption_pattern.analysis_start else None,
+            "analysis_period_end": self._consumption_pattern.analysis_end.isoformat() if self._consumption_pattern.analysis_end else None,
+            "last_updated": self._last_analysis.isoformat() if self._last_analysis else None,
+            "hourly_averages": self._consumption_pattern.hourly_averages,
+            "daily_averages": self._consumption_pattern.daily_averages,
+            "monthly_averages": self._consumption_pattern.monthly_averages,
+        }
+    
+    def get_consumption_pattern(self) -> Optional[ConsumptionPattern]:
+        """Get the current consumption pattern for other sensors."""
+        return self._consumption_pattern
 
+
+class TariffRecommendationSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for best tariff recommendation."""
+    
+    _attr_icon = "mdi:lightning-bolt"
+    _attr_native_unit_of_measurement = "€/year"
+    
+    def __init__(self, coordinator, entry_id: str, recommendation_engine: TariffRecommendationEngine, config: Dict):
+        """Initialize the tariff recommendation sensor."""
+        super().__init__(coordinator)
+        self._recommendation_engine = recommendation_engine
+        self._config = config
+        self._attr_name = "Best Tariff Recommendation"
+        self._attr_unique_id = f"{entry_id}_best_tariff"
+        self._last_recommendation = None
+        
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        
+        # Schedule periodic recommendation updates every 12 hours
+        async_track_time_interval(
+            self.hass, self._async_update_recommendation, timedelta(hours=12)
+        )
+        
+        # Run initial recommendation after a delay to let consumption analysis complete
+        async_track_time_interval(
+            self.hass, self._async_update_recommendation, timedelta(minutes=5)
+        )
+    
+    async def _async_update_recommendation(self, now=None):
+        """Update tariff recommendation."""
+        try:
+            # Find the consumption analysis sensor
+            consumption_pattern = None
+            
+            # Look for consumption analysis sensor in the same entry
+            for entity_id in self.hass.states.async_entity_ids():
+                if (entity_id.startswith("sensor.") and 
+                    "consumption_analysis" in entity_id and
+                    DOMAIN in entity_id):
+                    
+                    # Try to get the consumption pattern from the sensor
+                    entity = self.hass.data.get("entity_registry", {}).get(entity_id)
+                    if hasattr(entity, 'get_consumption_pattern'):
+                        consumption_pattern = entity.get_consumption_pattern()
+                        break
+            
+            if not consumption_pattern:
+                _LOGGER.warning("No consumption pattern available for recommendation - skipping")
+                return
+            
+            # Get tariff data from coordinator
+            if not self.coordinator.data or self.coordinator.data.empty:
+                _LOGGER.warning("No tariff data available for recommendation")
+                return
+            
+            _LOGGER.debug("Generating tariff recommendation with %d tariffs", len(self.coordinator.data))
+            
+            # Generate recommendation
+            self._last_recommendation = self._recommendation_engine.analyze_and_recommend(
+                self.coordinator.data,
+                consumption_pattern,
+                self._config.get("current_tariff_code"),
+                self._config.get("tariff_type", "bi_hourly")
+            )
+            
+            if self._last_recommendation:
+                _LOGGER.info("Updated tariff recommendation: %s (€%.2f/year, €%.2f savings)", 
+                           self._last_recommendation.recommended_tariff_code,
+                           self._last_recommendation.recommended_annual_cost,
+                           self._last_recommendation.annual_savings)
+            
+            self.async_write_ha_state()
+            
+        except Exception as e:
+            _LOGGER.error("Error updating tariff recommendation: %s", e)
+    
     @property
-    def unique_id(self) -> str:
-        """Return a unique ID for the sensor."""
-        return self._attr_unique_id
+    def native_value(self):
+        """Return the annual cost of the recommended tariff."""
+        if self._last_recommendation:
+            return round(self._last_recommendation.recommended_annual_cost, 2)
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return recommendation attributes."""
+        if not self._last_recommendation:
+            return {
+                "status": "No recommendation available",
+                "current_tariff": self._config.get("current_tariff_code"),
+            }
+        
+        return {
+            "recommended_tariff_code": self._last_recommendation.recommended_tariff_code,
+            "recommended_tariff_name": self._last_recommendation.recommended_tariff_name,
+            "recommended_provider": self._last_recommendation.recommended_comercializador,
+            "annual_cost": self._last_recommendation.recommended_annual_cost,
+            "monthly_cost": self._last_recommendation.recommended_monthly_cost,
+            "current_tariff_code": self._last_recommendation.current_tariff_code,
+            "current_annual_cost": self._last_recommendation.current_annual_cost,
+            "annual_savings": self._last_recommendation.annual_savings,
+            "monthly_savings": self._last_recommendation.monthly_savings,
+            "savings_percentage": self._last_recommendation.savings_percentage,
+            "tariffs_analyzed": self._last_recommendation.total_tariffs_analyzed,
+            "data_quality": self._last_recommendation.consumption_analysis_quality * 100,
+            "analysis_timestamp": self._last_recommendation.analysis_timestamp,
+            "fixed_cost_annual": self._last_recommendation.recommended_fixed_cost_annual,
+            "energy_cost_annual": self._last_recommendation.recommended_energy_cost_annual,
+            "additional_cost_annual": self._last_recommendation.recommended_additional_cost_annual,
+            "top_alternatives": self._last_recommendation.top_alternatives[:3],  # Top 3 alternatives
+        }
+
+
+class PotentialSavingsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for potential annual savings."""
+    
+    _attr_icon = "mdi:piggy-bank"
+    _attr_native_unit_of_measurement = "€/year"
+    
+    def __init__(self, coordinator, entry_id: str, recommendation_engine: TariffRecommendationEngine):
+        """Initialize the potential savings sensor."""
+        super().__init__(coordinator)
+        self._recommendation_engine = recommendation_engine
+        self._attr_name = "Potential Annual Savings"
+        self._attr_unique_id = f"{entry_id}_potential_savings"
+    
+    @property
+    def native_value(self):
+        """Return the potential annual savings."""
+        if self._recommendation_engine.last_recommendation:
+            return round(self._recommendation_engine.last_recommendation.annual_savings, 2)
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return savings breakdown."""
+        if not self._recommendation_engine.last_recommendation:
+            return {"status": "No savings calculation available"}
+        
+        rec = self._recommendation_engine.last_recommendation
+        return {
+            "monthly_savings": round(rec.monthly_savings, 2),
+            "savings_percentage": round(rec.savings_percentage, 1),
+            "current_annual_cost": rec.current_annual_cost,
+            "recommended_annual_cost": rec.recommended_annual_cost,
+            "current_tariff": rec.current_tariff_code,
+            "recommended_tariff": rec.recommended_tariff_code,
+            "payback_period_years": round(rec.current_annual_cost / rec.recommended_annual_cost, 1) if rec.recommended_annual_cost > 0 else None,
+        }
+
+
+class BestTariffComparisonSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for detailed tariff comparison."""
+    
+    _attr_icon = "mdi:compare"
+    
+    def __init__(self, coordinator, entry_id: str, recommendation_engine: TariffRecommendationEngine):
+        """Initialize the comparison sensor."""
+        super().__init__(coordinator)
+        self._recommendation_engine = recommendation_engine
+        self._attr_name = "Tariff Comparison"
+        self._attr_unique_id = f"{entry_id}_tariff_comparison"
+    
+    @property
+    def native_value(self):
+        """Return the number of tariffs compared."""
+        if self._recommendation_engine.last_recommendation:
+            return self._recommendation_engine.last_recommendation.total_tariffs_analyzed
+        return None
+    
+    @property
+    def extra_state_attributes(self):
+        """Return detailed comparison data."""
+        if not self._recommendation_engine.last_recommendation:
+            return {"status": "No comparison available"}
+        
+        return self._recommendation_engine.get_detailed_comparison()
