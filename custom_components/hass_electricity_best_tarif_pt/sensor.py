@@ -76,6 +76,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 hass.config_entries.async_update_entry(entry, data=updated_data)
                 _LOGGER.info("✅ Updated config entry to enable consumption analysis permanently")
                 _LOGGER.info("✅ Added energy sensor: %s", energy_sensor)
+                
+                # Update the local config dict to use the new values immediately
+                config = updated_data
+                _LOGGER.info("✅ Using updated config for current setup")
+                
             except Exception as e:
                 _LOGGER.error("❌ Failed to update config entry: %s", e)
         else:
@@ -103,6 +108,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if not energy_sensor:
             _LOGGER.error("❌ No energy sensor configured for consumption analysis")
             _LOGGER.error("❌ This will prevent sensor creation. Please reconfigure the integration.")
+            _LOGGER.error("💡 The automatic fix should have added an energy sensor - check the logs above")
             return
         
         # Check if the energy sensor exists
