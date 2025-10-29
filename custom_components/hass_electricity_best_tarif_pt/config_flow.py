@@ -5,7 +5,11 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.core import callback
 from .const import DOMAIN, ENERGY_TYPE_OPTIONS
-from .data_loader import async_get_comercializadores, async_get_tariff_details_for_comercializador
+from .data_loader import (
+    TarifariosDataUpdateCoordinator,
+    async_get_comercializadores,
+    async_get_tariff_details_for_comercializador,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -969,48 +973,28 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
-        self._config_entry = config_entry  # Use private attribute to avoid deprecation
-        self._energy_sensors = []
+        self._config_entry = config_entry
+        self._data = dict(config_entry.data)
+        self._comercializadores = []
         self._available_tariffs = {}
+        self._power_sensors = []
 
     async def async_step_init(self, user_input=None):
-        """Manage the options."""
+        """Manage the main options menu."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=[
+                "consumption_analysis",
+                "current_tariff",
+                "general_settings",
+            ],
+        )
+
+    async def async_step_consumption_analysis(self, user_input=None):
+        """Handle consumption analysis settings."""
         errors = {}
         
-        # Get current configuration
-        current_data = self._config_entry.data
-        current_enable_analysis = current_data.get("enable_consumption_analysis", False)
-        
-        if user_input is not None:
-            # Update the config entry with new data
-            new_data = dict(current_data)
-            
-            # Always update enable_consumption_analysis
-            new_data["enable_consumption_analysis"] = user_input.get("enable_consumption_analysis", False)
-            
-            # If enabling analysis, update related settings
-            if user_input.get("enable_consumption_analysis", False):
-                if user_input.get("power_sensor"):
-                    new_data["power_sensor"] = user_input["power_sensor"]
-                if user_input.get("analysis_days"):
-                    new_data["analysis_days"] = user_input["analysis_days"]
-                if user_input.get("tariff_type"):
-                    new_data["tariff_type"] = user_input["tariff_type"]
-                if user_input.get("current_tariff_code"):
-                    new_data["current_tariff_code"] = user_input["current_tariff_code"]
-            
-            # Update the config entry
-            self.hass.config_entries.async_update_entry(
-                self._config_entry, data=new_data
-            )
-            
-            # Trigger a reload of the integration
-            await self.hass.config_entries.async_reload(self._config_entry.entry_id)
-            
-            return self.async_create_entry(title="", data={})
-
-        # Load energy sensors and tariff details if needed
-        if not self._energy_sensors:
+        if not self._power_sensors:
             try:
                 entity_registry = async_get_entity_registry(self.hass)
                 power_sensors = []
@@ -1018,93 +1002,157 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 
                 for entity in entity_registry.entities.values():
                     try:
-                        # Get entity attributes safely
-                        unit_of_measurement = entity.unit_of_measurement or ""
+                        unit = entity.unit_of_measurement or ""
                         device_class = entity.device_class or ""
-                        entity_id_lower = entity.entity_id.lower() if entity.entity_id else ""
+                        entity_id_lower = entity.entity_id.lower()
                         
-                        # Check for power sensors (W, kW, MW) - PREFERRED
-                        is_power_sensor = (
-                            device_class == "power" or
-                            "power" in entity_id_lower or
-                            "_w_" in entity_id_lower or
-                            "watts" in entity_id_lower or
-                            unit_of_measurement in ["W", "kW", "MW", "mW", "watts", "watt"]
+                        is_power = (
+                            device_class == "power" or "power" in entity_id_lower or
+                            unit in ["W", "kW", "MW", "mW"]
+                        )
+                        is_energy = (
+                            device_class == "energy" or "energy" in entity_id_lower or
+                            unit in ["kWh", "Wh", "MWh"]
                         )
                         
-                        # Check for energy sensors (kWh, Wh) - FALLBACK
-                        is_energy_sensor = (
-                            device_class == "energy" or 
-                            "energy" in entity_id_lower or
-                            "kwh" in entity_id_lower or
-                            unit_of_measurement in ["kWh", "Wh", "MWh"]
-                        )
-                        
-                        if is_power_sensor or is_energy_sensor:
+                        if is_power or is_energy:
                             state = self.hass.states.get(entity.entity_id)
                             if state and state.state not in ["unknown", "unavailable"]:
-                                friendly_name = state.attributes.get("friendly_name", entity.entity_id)
-                                unit = state.attributes.get("unit_of_measurement", "") or ""
-                                
+                                name = state.attributes.get("friendly_name", entity.entity_id)
+                                sensor_type = "⚡ Power" if is_power else "🔋 Energy"
                                 sensor_info = {
-                                    "entity_id": entity.entity_id,
-                                    "name": f"{friendly_name} ({unit}) [{entity.entity_id}]"
+                                    "id": entity.entity_id,
+                                    "name": f"{sensor_type} - {name} ({unit}) [{entity.entity_id}]"
                                 }
-                                
-                                if is_power_sensor:
-                                    sensor_info["name"] = f"⚡ Power (W) - {sensor_info['name']}"
+                                if is_power:
                                     power_sensors.append(sensor_info)
-                                elif is_energy_sensor:
-                                    sensor_info["name"] = f"🔋 Energy (kWh) - {sensor_info['name']}"
+                                else:
                                     energy_sensors.append(sensor_info)
-                    except Exception as entity_err:
-                        _LOGGER.debug("Error processing entity in options: %s", entity_err)
+                    except Exception:
                         continue
                 
-                # Prioritize power sensors first, then energy sensors
-                self._energy_sensors = power_sensors + energy_sensors
-                
+                self._power_sensors = power_sensors + energy_sensors
             except Exception as e:
-                _LOGGER.error("Error loading energy sensors in options: %s", e)
+                _LOGGER.error("Error loading sensors: %s", e)
+                errors["base"] = "sensor_discovery_failed"
 
-        # Build the options schema
-        sensor_options = {}
-        if self._energy_sensors:
-            sensor_options = {sensor["entity_id"]: sensor["name"] for sensor in self._energy_sensors}
-        
-        # Get current values for defaults
-        current_power_sensor = current_data.get("power_sensor")
-        current_analysis_days = current_data.get("analysis_days", 30)
-        current_tariff_type = current_data.get("tariff_type", "bi_hourly")
-        current_tariff_code = current_data.get("current_tariff_code")
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self._update_config()
 
-        schema_dict = {
-            vol.Required("enable_consumption_analysis", default=current_enable_analysis): bool,
-        }
+        schema = vol.Schema({
+            vol.Required(
+                "enable_consumption_analysis",
+                default=self._data.get("enable_consumption_analysis", False)
+            ): bool,
+            vol.Optional(
+                "power_sensor",
+                default=self._data.get("power_sensor")
+            ): vol.In({s["id"]: s["name"] for s in self._power_sensors}) if self._power_sensors else str,
+            vol.Optional(
+                "analysis_days",
+                default=self._data.get("analysis_days", 30)
+            ): vol.All(int, vol.Range(min=7, max=365)),
+        })
         
-        # Only show consumption options if analysis is enabled or if user wants to enable it
-        if current_enable_analysis or (user_input and user_input.get("enable_consumption_analysis")):
-            if sensor_options:
-                schema_dict[vol.Optional("power_sensor", default=current_power_sensor)] = vol.In(sensor_options)
-            else:
-                schema_dict[vol.Optional("power_sensor", default=current_power_sensor)] = str
-                
-            schema_dict.update({
-                vol.Optional("analysis_days", default=current_analysis_days): vol.All(int, vol.Range(min=7, max=365)),
-                vol.Optional("tariff_type", default=current_tariff_type): vol.In({
-                    "bi_hourly": "Bi-horário (Ponta/Vazio)",
-                    "tri_hourly": "Tri-horário (Ponta/Cheias/Vazio)"
-                }),
-                vol.Optional("current_tariff_code", default=current_tariff_code): str,
+        return self.async_show_form(
+            step_id="consumption_analysis",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_current_tariff(self, user_input=None):
+        """Handle current tariff selection (multi-step)."""
+        if user_input is not None:
+            self._data["current_provider"] = user_input["current_provider"]
+            return await self.async_step_current_tariff_code()
+
+        if not self._comercializadores:
+            try:
+                self._comercializadores = await async_get_comercializadores(self.hass)
+            except Exception:
+                return self.async_abort(reason="cannot_connect")
+        
+        return self.async_show_form(
+            step_id="current_tariff",
+            data_schema=vol.Schema({
+                vol.Required("current_provider", default=self._data.get("comercializador")): vol.In(self._comercializadores)
             })
+        )
+
+    async def async_step_current_tariff_code(self, user_input=None):
+        """Handle current tariff selection (step 2: tariff code)."""
+        errors = {}
+        provider = self._data.get("current_provider")
+
+        if not provider:
+            # This should not happen if the flow is followed correctly
+            return self.async_abort(reason="provider_not_set")
+
+        if user_input is not None:
+            self._data["current_tariff_code"] = user_input["current_tariff_code"]
+            self._data["comercializador"] = provider  # Update main field
+            return await self._update_config()
+
+        # Fetch tariffs for the selected provider if not already loaded
+        if not self._available_tariffs.get(provider):
+            try:
+                tariffs = await async_get_tariff_details_for_comercializador(self.hass, provider)
+                if not tariffs:
+                    errors["base"] = "no_tariffs_found"
+                self._available_tariffs[provider] = tariffs
+            except Exception:
+                errors["base"] = "cannot_connect"
+                self._available_tariffs[provider] = {}
+
+        tariffs_for_provider = self._available_tariffs.get(provider, {})
+
+        if not tariffs_for_provider and not errors:
+             errors["base"] = "no_tariffs_found"
+
+        schema = vol.Schema({
+            vol.Required(
+                "current_tariff_code",
+                default=self._data.get("current_tariff_code")
+            ): vol.In(tariffs_for_provider)
+        })
 
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(schema_dict),
+            step_id="current_tariff_code",
+            data_schema=schema,
             errors=errors,
-            description_placeholders={
-                "current_status": "Enabled" if current_enable_analysis else "Disabled",
-                "sensor_count": len(self._energy_sensors),
-                "comercializador": current_data.get("comercializador", "Unknown"),
-            }
+            description_placeholders={"provider": provider}
         )
+
+    async def async_step_general_settings(self, user_input=None):
+        """Handle general settings like 'potencia contratada' and tariff type."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return await self._update_config()
+
+        schema = vol.Schema({
+            vol.Required(
+                "pot_cont",
+                default=self._data.get("pot_cont", pot_cont_values[0])
+            ): vol.In(pot_cont_values),
+            vol.Required(
+                "tariff_type",
+                default=self._data.get("tariff_type", "bi_hourly")
+            ): vol.In({
+                "bi_hourly": "Bi-horário (Ponta/Vazio)",
+                "tri_hourly": "Tri-horário (Ponta/Cheias/Vazio)"
+            }),
+        })
+        
+        return self.async_show_form(
+            step_id="general_settings",
+            data_schema=schema,
+        )
+
+    async def _update_config(self):
+        """Update configuration and reload integration."""
+        self.hass.config_entries.async_update_entry(
+            self._config_entry, data=self._data
+        )
+        await self.hass.config_entries.async_reload(self._config_entry.entry_id)
+        return self.async_create_entry(title="", data={})

@@ -43,15 +43,48 @@
     "step": {
       "init": {
         "title": "Smart Tariff Analyzer Options",
-        "description": "Current status: {current_status} | Provider: {comercializador} | Available sensors: {sensor_count}",
+        "menu_options": {
+          "consumption_analysis": "Consumption Analysis Settings",
+          "current_tariff": "Set Your Current Tariff",
+          "general_settings": "General Settings"
+        }
+      },
+      "consumption_analysis": {
+        "title": "Consumption Analysis Settings",
         "data": {
           "enable_consumption_analysis": "Enable Smart Consumption Analysis",
-          "energy_sensor": "Power/Energy Sensor (W or kWh)",
-          "analysis_days": "Analysis Period (days)",
-          "tariff_type": "Tariff Structure Type",
-          "current_tariff_code": "Current Tariff Code"
+          "power_sensor": "Power/Energy Sensor (W or kWh)",
+          "analysis_days": "Analysis Period (days)"
+        }
+      },
+      "current_tariff": {
+        "title": "Set Your Current Tariff (Step 1 of 2)",
+        "data": {
+          "current_provider": "Select Your Energy Provider"
+        }
+      },
+      "current_tariff_code": {
+        "title": "Set Your Current Tariff (Step 2 of 2)",
+        "description": "Select your current tariff plan for '{provider}'.",
+        "data": {
+          "current_tariff_code": "Current Tariff Plan"
+        }
+      },
+      "general_settings": {
+        "title": "General Settings",
+        "data": {
+          "pot_cont": "Contracted Power (kVA)",
+          "tariff_type": "Tariff Structure Type"
         }
       }
+    },
+    "error": {
+      "no_tariffs_found": "No tariffs found for the selected provider. Please try another one or check the logs.",
+      "cannot_connect": "Failed to connect to the data source to get tariffs.",
+      "sensor_discovery_failed": "Failed to discover power/energy sensors."
+    },
+    "abort": {
+      "provider_not_set": "Provider was not set. Please go back to the previous step."
     }
   },
   "title": "Smart Electricity Tariff Analyzer"
