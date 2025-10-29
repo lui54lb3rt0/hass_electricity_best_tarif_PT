@@ -162,110 +162,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     for key, value in config.items():
         _LOGGER.info("   %s: %s (type: %s)", key, value, type(value))
     
+    # Create recommendation engine
+    recommendation_engine = TariffRecommendationEngine()
+    
+    # Store the recommendation engine in the domain data
+    if "recommendation_engines" not in hass.data[DOMAIN]:
+        hass.data[DOMAIN]["recommendation_engines"] = {}
+    hass.data[DOMAIN]["recommendation_engines"][entry.entry_id] = recommendation_engine
+
+    # Always create the main recommendation sensor. It will adapt its state
+    # based on whether consumption analysis is active.
+    entities.append(
+        TariffRecommendationSensor(coordinator, entry.entry_id, recommendation_engine, config)
+    )
+    _LOGGER.info("✅ Created base TariffRecommendationSensor.")
+
+    # Now, add consumption-specific sensors ONLY if analysis is enabled
     if enable_analysis:
-        _LOGGER.info("✅ ENTERING SENSOR CREATION: Smart tariff analysis sensors")
-        _LOGGER.info("🔍 ANALYSIS ENABLED: %s", enable_analysis)
+        _LOGGER.info("✅ Consumption analysis is enabled, creating additional sensors.")
         
         power_sensor = config.get("power_sensor")
         analysis_days = config.get("analysis_days", 30)
         tariff_type = config.get("tariff_type", "bi_hourly")
-        current_tariff_code = config.get("current_tariff_code")
-        
-        _LOGGER.info("Analysis config - Power sensor: %s, Days: %d, Type: %s, Current tariff: %s", 
-                     power_sensor, analysis_days, tariff_type, current_tariff_code)
         
         if not power_sensor:
-            _LOGGER.error("❌ SENSOR CREATION FAILED: No power sensor configured for consumption analysis")
-            _LOGGER.error("❌ This will prevent sensor creation. Please reconfigure the integration.")
-            _LOGGER.error("💡 The automatic fix should have added a power sensor - check the logs above")
-            _LOGGER.error("🔍 Current config: %s", dict(config))
-            return
-        
-        # Check if the power sensor exists
-        sensor_state = hass.states.get(power_sensor)
-        if not sensor_state:
-            _LOGGER.error("❌ SENSOR CREATION FAILED: Power sensor %s not found in Home Assistant", power_sensor)
-            _LOGGER.error("❌ Available power/energy-related sensors: %s", [s for s in hass.states.async_entity_ids() if 'power' in s.lower() or 'energy' in s.lower() or 'kwh' in s.lower()][:10])
-            _LOGGER.error("🔍 Total available sensors: %d", len(list(hass.states.async_entity_ids())))
-            return
-        elif sensor_state.state in ["unknown", "unavailable"]:
-            _LOGGER.warning("⚠️ Power sensor %s is in state '%s' - analysis may not work properly", 
-                          power_sensor, sensor_state.state)
+            _LOGGER.error("❌ Cannot create analysis sensors: No power sensor configured.")
         else:
-            _LOGGER.info("✅ Power sensor %s found with state: %s %s", 
-                        power_sensor, sensor_state.state, sensor_state.attributes.get("unit_of_measurement", ""))
-        
-        # Create recommendation engine
-        recommendation_engine = TariffRecommendationEngine()
-        
-        # Store the recommendation engine in the domain data
-        if "recommendation_engines" not in hass.data[DOMAIN]:
-            hass.data[DOMAIN]["recommendation_engines"] = {}
-        hass.data[DOMAIN]["recommendation_engines"][entry.entry_id] = recommendation_engine
-        
-        # Create analysis sensors
-        try:
-            _LOGGER.info("🏗️ STARTING SENSOR CREATION: About to create analysis sensors")
-            _LOGGER.info("🔧 Creating analysis sensors...")
-            sensors_to_create = [
-                ("ConsumptionAnalysisSensor", ConsumptionAnalysisSensor(
-                    coordinator, entry.entry_id, power_sensor, analysis_days, tariff_type
-                )),
-                ("TariffRecommendationSensor", TariffRecommendationSensor(
-                    coordinator, entry.entry_id, recommendation_engine, config
-                )),
-                ("PotentialSavingsSensor", PotentialSavingsSensor(
-                    coordinator, entry.entry_id, recommendation_engine
-                )),
-                ("BestTariffComparisonSensor", BestTariffComparisonSensor(
-                    coordinator, entry.entry_id, recommendation_engine
-                )),
-            ]
-            
-            for sensor_name, sensor_instance in sensors_to_create:
-                entities.append(sensor_instance)
-                _LOGGER.info("✅ Created %s: %s", sensor_name, sensor_instance.unique_id)
-                # If this is the consumption analysis sensor, store a reference so other sensors
-                # (like recommendations) can access its calculated pattern without trying to
-                # reach into the entity platform (avoids using non-existent EntityRegistry APIs).
+            sensor_state = hass.states.get(power_sensor)
+            if not sensor_state:
+                _LOGGER.error("❌ Cannot create analysis sensors: Power sensor '%s' not found.", power_sensor)
+            elif sensor_state.state in ["unknown", "unavailable"]:
+                _LOGGER.warning("⚠️ Power sensor '%s' is unavailable. Analysis may be inaccurate.", power_sensor)
+            else:
+                _LOGGER.info("✅ Power sensor '%s' is available.", power_sensor)
+
                 try:
-                    if hasattr(sensor_instance, 'get_consumption_pattern'):
-                        hass.data.setdefault(DOMAIN, {})
-                        hass.data[DOMAIN].setdefault("consumption_sensors", {})
-                        hass.data[DOMAIN]["consumption_sensors"][entry.entry_id] = sensor_instance
-                        _LOGGER.debug("Stored consumption sensor instance for entry %s", entry.entry_id)
-                except Exception:
-                    # Don't let storage failures block sensor creation
-                    _LOGGER.debug("Could not store consumption sensor instance for %s", entry.entry_id, exc_info=True)
-        
-        except Exception as e:
-            _LOGGER.error("❌ Error creating analysis sensors: %s", e, exc_info=True)
-            return
-        
-        _LOGGER.info("🎉 Successfully created %d smart analysis sensors", len(entities))
-    else:
-        _LOGGER.warning("❌ Consumption analysis is DISABLED in configuration")
-        _LOGGER.warning("❌ Expected config key 'enable_consumption_analysis' = True, got: %s (type: %s)", 
-                       config.get("enable_consumption_analysis"), type(config.get("enable_consumption_analysis")))
-        _LOGGER.warning("❌ Full config: %s", dict(config))
-        _LOGGER.warning("❌ Current config keys: %s", list(config.keys()))
-        _LOGGER.info("💡 To enable analysis, delete and recreate the integration with consumption analysis enabled")
-    
+                    # Create and add the main analysis sensor
+                    analysis_sensor = ConsumptionAnalysisSensor(
+                        coordinator, entry.entry_id, power_sensor, analysis_days, tariff_type
+                    )
+                    entities.append(analysis_sensor)
+                    _LOGGER.info("✅ Created ConsumptionAnalysisSensor.")
+
+                    # Store a reference for other sensors to access its data
+                    hass.data.setdefault(DOMAIN, {}).setdefault("consumption_sensors", {})
+                    hass.data[DOMAIN]["consumption_sensors"][entry.entry_id] = analysis_sensor
+                    _LOGGER.debug("Stored consumption sensor instance for entry %s", entry.entry_id)
+
+                    # Create and add other sensors that depend on analysis
+                    entities.extend([
+                        PotentialSavingsSensor(coordinator, entry.entry_id, recommendation_engine),
+                        BestTariffComparisonSensor(coordinator, entry.entry_id, recommendation_engine),
+                    ])
+                    _LOGGER.info("✅ Created PotentialSavingsSensor and BestTariffComparisonSensor.")
+                
+                except Exception as e:
+                    _LOGGER.error("❌ Error creating additional analysis sensors: %s", e, exc_info=True)
+
     if entities:
-        _LOGGER.info("📤 Adding %d entities to Home Assistant", len(entities))
+        _LOGGER.info("📤 Adding %d entities to Home Assistant.", len(entities))
         async_add_entities(entities, True)
     else:
-        _LOGGER.error("❌ No entities to add - check configuration above")
-        _LOGGER.error("❌ This usually means:")
-        _LOGGER.error("   1. enable_consumption_analysis is False or missing (current: %s)", enable_analysis)
-        _LOGGER.error("   2. power_sensor is missing or invalid (current: %s)", config.get("power_sensor"))
-        _LOGGER.error("   3. An error occurred during sensor creation")
-        _LOGGER.error("🔍 DEBUGGING INFO:")
-        _LOGGER.error("   - Enable analysis: %s (type: %s)", enable_analysis, type(enable_analysis))
-        _LOGGER.error("   - Raw config value: %s (type: %s)", config.get("enable_consumption_analysis"), type(config.get("enable_consumption_analysis")))
-        _LOGGER.error("   - Power sensor: %s", config.get("power_sensor"))
-        _LOGGER.error("   - All config keys: %s", list(config.keys()))
-        _LOGGER.error("💡 Please check the integration configuration in Home Assistant settings")
+        # This path should ideally not be taken anymore.
+        _LOGGER.error("❌ No entities were created. This indicates a critical failure during setup.")
+        _LOGGER.error("   - Final 'enable_analysis' flag: %s", enable_analysis)
+        _LOGGER.error("   - Final 'power_sensor' config: %s", config.get("power_sensor"))
+        _LOGGER.error("💡 Please check the integration configuration and review logs for errors.")
 
 
 class ConsumptionAnalysisSensor(CoordinatorEntity, SensorEntity):
